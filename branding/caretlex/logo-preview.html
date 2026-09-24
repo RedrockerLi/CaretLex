@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CaretLex 品牌标识预览</title>
+<style>
+
+  :root { color-scheme: light; font-family: Inter, "Segoe UI", Arial, sans-serif; background:#eef1f4; color:#171c26; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:36px 28px 54px; }
+  main { max-width:1180px; margin:auto; }
+  h1 { margin:0 0 7px; font-size:27px; letter-spacing:-.025em; }
+  h2 { margin:38px 0 14px; font-size:19px; }
+  p { color:#536074; line-height:1.5; margin:0; }
+  .intro { margin-bottom:24px; }
+  .candidates { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
+  .candidate { padding:16px; background:white; border:1px solid #d9dee6; border-radius:10px; }
+  .candidate h3 { margin:0 0 11px; font-size:15px; }
+  .candidate svg { display:block; width:128px; height:128px; margin:0 auto; }
+  .candidate p { margin-top:11px; font-size:13px; }
+  .asset-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; }
+  .asset { min-width:0; padding:14px; border:1px solid #d9dee6; border-radius:10px; background:#fff; }
+  .asset h3 { font-size:13px; margin:0 0 12px; color:#465267; }
+  .asset img.horizontal { display:block; width:min(100%, 580px); height:auto; }
+  .tone-dark { background:#171c26; }
+  .tone-light { background:#f4f6f8; }
+  .tone-dark h3 { color:#cbd3de; }
+  .tone-light h3 { color:#465267; }
+  .tone-dark img.horizontal { width:100%; }
+  .icon-row { display:flex; gap:18px; align-items:flex-end; justify-content:space-around; min-height:142px; flex-wrap:wrap; }
+  .icon-row img { display:block; object-fit:contain; }
+  .mono-dark-panel { background:#f4f6f8; }
+  .mono-light-panel { background:#171c26; }
+  .sizes { display:flex; align-items:flex-end; flex-wrap:wrap; gap:16px; }
+  .size-item { min-height:66px; min-width:55px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:5px; color:#667287; font-size:11px; }
+  .size-item img { image-rendering:auto; display:block; }
+  footer { margin-top:32px; color:#718096; font-size:12px; }
+  @media(max-width:740px) { body { padding:22px 14px 36px; } .candidates,.asset-grid { grid-template-columns:1fr; } }
+
+</style>
+</head>
+<body><main>
+  <h1>CaretLex 品牌标识</h1>
+  <p class="intro">先并列比较同一配色与 128 × 128 画布上的 A / B / C，再查看发布资产及真实输出尺寸。正式图形由词条标签顺序 <code>[^w-]</code> 构成。</p>
+  <h2>候选比较 · 深色配色 · 128 × 128</h2>
+  <section class="candidates">
+<article class="candidate"><h3>A · Protocol</h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Candidate A: [ caret w hyphen ]">
+      <rect width="128" height="128" fill="#171C26"/>
+      <path d="M 31 38 H 20 V 90 H 31 M 97 38 H 108 V 90 H 97" fill="none" stroke="#96A1B2" stroke-width="3.4" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 37 61 L 46 45 L 55 61" fill="none" stroke="#E2B35D" stroke-width="5.5" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 62 55 L 65.5 75 L 73 59 L 80.5 75 L 84 55" fill="none" stroke="#F4F6F8" stroke-width="3.0" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 87 66 H 94" fill="none" stroke="#F4F6F8" stroke-width="3.2" stroke-linecap="square"/>
+    </svg><p>间距清楚，按语法顺序快速识别。</p></article>
+<article class="candidate"><h3>B · Geometric</h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Candidate B: [ caret w hyphen ]">
+      <rect width="128" height="128" fill="#171C26"/>
+      <path d="M 31 38 H 20 V 90 H 31 M 97 38 H 108 V 90 H 97" fill="none" stroke="#96A1B2" stroke-width="4.0" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 36 61 L 45.5 44 L 55 61" fill="none" stroke="#E2B35D" stroke-width="6.8" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 64 55 L 67.5 76 L 75 60 L 82.5 76 L 86 55" fill="none" stroke="#F4F6F8" stroke-width="3.5" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 89 66 H 96" fill="none" stroke="#F4F6F8" stroke-width="3.7" stroke-linecap="square"/>
+    </svg><p>笔画层级与光学重心更平衡，作为定稿。</p></article>
+<article class="candidate"><h3>C · Compact</h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Candidate C: [ caret w hyphen ]">
+      <rect width="128" height="128" fill="#171C26"/>
+      <path d="M 32 40 H 21 V 88 H 32 M 96 40 H 107 V 88 H 96" fill="none" stroke="#96A1B2" stroke-width="4.8" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 39 61 L 47 46 L 55 61" fill="none" stroke="#E2B35D" stroke-width="7.4" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 62 55 L 66 75 L 74 60 L 82 75 L 85 55" fill="none" stroke="#F4F6F8" stroke-width="4.3" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M 88 66 H 94" fill="none" stroke="#F4F6F8" stroke-width="4.8" stroke-linecap="square"/>
+    </svg><p>笔画更紧凑、更厚，面向缩小查看。</p></article>
+</section>
+  <h2>横向标</h2>
+  <section class="asset-grid">
+    <article class="asset tone-dark"><h3>深色横标 · 580 × 160</h3><img class="horizontal" src="logo-horizontal-dark.svg" alt="CaretLex 深色横向标"></article>
+    <article class="asset tone-light"><h3>浅色横标 · 580 × 160</h3><img class="horizontal" src="logo-horizontal-light.svg" alt="CaretLex 浅色横向标"></article>
+  </section>
+  <h2>应用图标与单色标</h2>
+  <section class="asset-grid">
+    <article class="asset tone-dark"><h3>深色应用图标 · 完整 [^w-]</h3><div class="icon-row"><img src="logo-icon-dark.svg" width="128" height="128" alt="深色完整图标"></div></article>
+    <article class="asset tone-light"><h3>浅色应用图标 · 完整 [^w-]</h3><div class="icon-row"><img src="logo-icon-light.svg" width="128" height="128" alt="浅色完整图标"></div></article>
+    <article class="asset tone-light"><h3>透明图标 · 放在浅色底上</h3><div class="icon-row"><img src="logo-icon-transparent.svg" width="128" height="128" alt="透明图标"></div></article>
+    <article class="asset mono-dark-panel"><h3>单色深墨标 · 放在浅色底上</h3><img class="horizontal" src="logo-monochrome-dark.svg" alt="深墨色单色横标"></article>
+    <article class="asset mono-light-panel"><h3>单色浅色标 · 放在深色底上</h3><img class="horizontal" src="logo-monochrome-light.svg" alt="浅色单色横标"></article>
+    <article class="asset tone-light"><h3>可编辑字标源 · 使用本机 Inter 字体</h3><img src="logo-wordmark-editable.svg" width="375" height="106" alt="可编辑 CaretLex 字标"></article>
+  </section>
+  <h2>实际尺寸检查</h2>
+  <section class="asset-grid">
+    <article class="asset tone-light"><h3>favicon.svg · [^] 简化版</h3><div class="sizes">
+<div class="size-item"><img src="favicon.svg" width="16" height="16" alt=""><span>16px</span></div>
+<div class="size-item"><img src="favicon.svg" width="24" height="24" alt=""><span>24px</span></div>
+<div class="size-item"><img src="favicon.svg" width="32" height="32" alt=""><span>32px</span></div>
+<div class="size-item"><img src="favicon.svg" width="48" height="48" alt=""><span>48px</span></div>
+</div></article>
+    <article class="asset tone-light"><h3>Electron / Linux · logo-icon-dark.svg 派生</h3><div class="sizes">
+<div class="size-item"><img src="logo-icon-dark.svg" width="128" height="128" alt=""><span>128px</span></div>
+<div class="size-item"><img src="logo-icon-dark.svg" width="256" height="256" alt=""><span>256px</span></div>
+</div></article>
+  </section>
+  <footer>离线预览：本页仅引用当前目录中的本地 SVG，不请求网络或字体文件。正式横标字形为路径。</footer>
+</main></body></html>

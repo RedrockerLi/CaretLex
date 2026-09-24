@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="106" viewBox="0 0 375 106" role="img" aria-labelledby="title">
+  <title id="title">Editable CaretLex wordmark source</title>
+  <style>
+    :root { --wordmark-primary:#171C26; --wordmark-accent:#9A6500; }
+    text { font-family: Inter, sans-serif; font-size:78px; font-weight:600; letter-spacing:0; }
+  </style>
+  <text x="0" y="83" fill="var(--wordmark-primary)">Caret<tspan fill="var(--wordmark-accent)">Lex</tspan></text>
+</svg>

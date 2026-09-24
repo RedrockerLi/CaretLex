@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CaretLex application icon, dark theme</title>
+  <desc id="desc">CaretLex word-entry marker geometry: left bracket, caret, w, hyphen, right bracket.</desc>
+  <style>
+    :root { --background:#171C26; --bracket:#96A1B2; --caret:#E2B35D; --word:#F4F6F8; }
+    .bracket { fill:none; stroke:var(--bracket); stroke-width:4; stroke-linecap:square; stroke-linejoin:miter; }
+    .caret { fill:none; stroke:var(--caret); stroke-width:6.8; stroke-linecap:square; stroke-linejoin:miter; }
+    .word { fill:none; stroke:var(--word); stroke-width:3.5; stroke-linecap:square; stroke-linejoin:miter; }
+    .hyphen { fill:none; stroke:var(--word); stroke-width:3.7; stroke-linecap:square; }
+  </style>
+  <rect width="128" height="128" fill="var(--background)"/>
+  <g aria-label="[ caret w hyphen ]">
+    <path d="M 31 38 H 20 V 90 H 31 M 97 38 H 108 V 90 H 97" fill="none" stroke="var(--bracket)" stroke-width="4.0" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M 36 61 L 45.5 44 L 55 61" fill="none" stroke="var(--caret)" stroke-width="6.8" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M 64 55 L 67.5 76 L 75 60 L 82.5 76 L 86 55" fill="none" stroke="var(--word)" stroke-width="3.5" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M 89 66 H 96" fill="none" stroke="var(--word)" stroke-width="3.7" stroke-linecap="square"/>
+  </g>
+</svg>

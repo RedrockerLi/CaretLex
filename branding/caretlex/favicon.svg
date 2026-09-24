@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CaretLex compact favicon</title>
+  <desc id="desc">CaretLex word-entry marker geometry: left bracket, caret, w, hyphen, right bracket.</desc>
+  <style>
+    :root { --background:#171C26; --bracket:#96A1B2; --caret:#E2B35D; --word:#F4F6F8; }
+    .bracket { fill:none; stroke:var(--bracket); stroke-width:4; stroke-linecap:square; stroke-linejoin:miter; }
+    .caret { fill:none; stroke:var(--caret); stroke-width:6.8; stroke-linecap:square; stroke-linejoin:miter; }
+    .word { fill:none; stroke:var(--word); stroke-width:3.5; stroke-linecap:square; stroke-linejoin:miter; }
+    .hyphen { fill:none; stroke:var(--word); stroke-width:3.7; stroke-linecap:square; }
+  </style>
+  <rect width="128" height="128" fill="var(--background)"/>
+  <path d="M 47 37 H 35 V 91 H 47 M 81 37 H 93 V 91 H 81" fill="none" stroke="var(--bracket)" stroke-width="7" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M 53 73 L 64 51 L 75 73" fill="none" stroke="var(--caret)" stroke-width="9" stroke-linecap="square" stroke-linejoin="miter"/>
+</svg>
