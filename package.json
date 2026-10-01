@@ -64,7 +64,7 @@
       ],
       "category": "Office",
       "syncDesktopName": true,
-      "icon": "branding/caretlex/app-icon.png",
+      "icon": "branding/app-icon.png",
       "synopsis": "An English Markdown reader with vocabulary notes",
       "artifactName": "CaretLex-${version}-${arch}.${ext}",
       "mimeTypes": ["text/markdown", "text/x-markdown"]
