@@ -1,9 +1,12 @@
-import type { DocumentSnapshot, JsonValue, ParsedDocument, SourceSpan } from './types'
+import type { DocumentSnapshot, JsonValue, ParsedDocument, SourceSpan, VocabRecord } from './types'
 import type { AppSettings } from './settings'
+import type { ArticleData, ProviderIssue } from './providers'
+import type { CoreResult } from './types'
 
 export interface DocumentResult {
+  error?: string
   snapshot: DocumentSnapshot
-  parsed: ParsedDocument
+  parsed: Omit<ParsedDocument, 'entries'> & { entries: Array<[string, VocabRecord]> }
 }
 
 export interface SaveResult extends DocumentResult {
@@ -11,7 +14,9 @@ export interface SaveResult extends DocumentResult {
 }
 
 export interface SettingsSnapshot {
-  value: AppSettings
+  resetToken?: string
+  value?: AppSettings
+  text?: string
   revision: string
   path: string
   error?: string
@@ -22,7 +27,29 @@ export type DocumentChangedEvent = {
   document: DocumentResult
 }
 
+export interface EntryLocation {
+  documentId: string
+  baseRevision?: string
+  sourceSpan: SourceSpan
+  selected: string
+}
+export interface ProviderFetchInput extends EntryLocation { requestId: string; settingsRevision: string }
+export interface SourceResult {
+  requestId: string
+  article?: ArticleData
+  sources: Record<string, JsonValue>
+  examples: Record<string, JsonValue>
+  issues: ProviderIssue[]
+}
+export interface ProviderDescription { type: string; defaultConfig: JsonValue; hasPreset: boolean }
 export interface CaretLexBridge {
+  providerTypes(): Promise<ProviderDescription[]>
+  providerPreset(input: { type: string; name: string; config: JsonValue }): Promise<{ template: JsonValue | null; reason?: string }>
+  getArticle(input: EntryLocation): Promise<CoreResult<ArticleData>>
+  fetchSources(input: ProviderFetchInput): Promise<SourceResult>
+  cancelProvider(requestId: string): Promise<void>
+  saveCredential(key: string): Promise<string>
+  credentialStatus(ref?: string): Promise<{ exists: boolean; error?: string }>
   takeStartupDocument(): Promise<DocumentResult | null>
   openMarkdown(): Promise<DocumentResult | null>
   newDocument(): Promise<DocumentResult>
@@ -42,6 +69,7 @@ export interface CaretLexBridge {
   exportCurrentVocabulary(documentId: string): Promise<{ kind: 'saved'; path: string } | { kind: 'cancelled' }>
   loadSettings(): Promise<SettingsSnapshot>
   saveSettings(input: { value: unknown; baseRevision?: string }): Promise<SettingsSnapshot>
+  resetSettings(resetToken: string): Promise<SettingsSnapshot>
   chooseSettingsPath(): Promise<SettingsSnapshot | null>
   openExternal(url: string): Promise<void>
   loadLocalImage(documentId: string, source: string): Promise<string | null>

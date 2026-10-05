@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-CaretLex 是一个面向英文 Markdown 阅读的本地桌面应用。阅读时选中单词，手动确认原型和中文释义，词条便会作为标准 Markdown 脚注保存在原文件中。
+CaretLex 是一个面向英文 Markdown 阅读的本地桌面应用。阅读时选中单词，检查自动数据或手动填写，确认原型与上下文释义，词条便会作为标准 Markdown 脚注保存在原文件中。
 
 词条随 Markdown 一起复制、同步和版本管理，不需要账户、云服务或独立词条数据库。
 
@@ -13,11 +13,11 @@ CaretLex 是一个面向英文 Markdown 阅读的本地桌面应用。阅读时�
 
 1. 点击“打开 Markdown”选择英文文档，或点击“新建文档”。
 2. 在阅读视图中选中一个完整的英文单词，点击“存为词条”。
-3. 确认词条原型（lemma），填写中文翻译；英文例句会从选词所在句子预填，也可以修改。
+3. 检查带真实选词标记的原句，确认词条原型（lemma），编辑完整最终 JSON；可在设置中启用 LLM 自动填写。
 4. 保存后，原文词形下方会显示虚线。悬停或聚焦该词即可查看词条。
 5. 在词条卡中查看完整 JSON、修改词条内容，或删除该词条及其全部正文引用。
 
-同一 lemma 出现在多个位置时，各位置共用一条定义。再次选择新位置并使用相同 lemma，只会添加引用，不会覆盖现有释义。
+同一 lemma 出现在多个位置时，各位置共用一条定义。再次选择新位置并使用相同 lemma，会追加新的标记原句 context；同原句 key 保留人工释义。完整 JSON 手改以确认的最终值写入。
 
 ## 阅读与编辑
 
@@ -36,7 +36,7 @@ CaretLex 是一个面向英文 Markdown 阅读的本地桌面应用。阅读时�
 She went[^w-go] to school. He goes[^w-go] home.
 
 <!-- caretlex:vocab:start -->
-[^w-go]: {"word":"go","translation":"去","example":"She went to school."}
+[^w-go]: {"lemma":"go","contexts":[{"original_sentence":"She [went] to school.","meaning_in_context":"（动词）去","english_definition":"to move or travel"}],"other_meanings":[]}
 <!-- caretlex:vocab:end -->
 ```
 
@@ -47,14 +47,21 @@ CaretLex 只修改目标词形后的引用和文末托管区块。支持 GFM 脚
 设置页提供以下内容：
 
 - 跟随系统、亮色和暗色主题；
-- 完整的词条 JSON 模板和字段绑定；
-- 设置 JSON 文件的位置选择，可放入用户自己的同步目录。
+- 多个 provider 实例、唯一启用实例、LLM 配置表单与 API 类型选择；
+- 来源侧响应 JSON 示例，Prompt 支持 `{{JSON}}` 变量；
+- 设置 JSON 文件的位置选择，可放入用户自己的同步目录；
+- 可折叠的 provider 实例、分栏连接表单、大尺寸 Prompt 与响应编辑框；
+- 恢复默认设置按钮，可修复非法 JSON、无法解码的配置及损坏的路径指针。
 
-默认词条包含 `word`、`translation` 和 `example`。自定义模板可以保存任意合法 JSON 值。
+默认词条包含 `lemma`、成对的 `contexts` 和 `other_meanings`。表单启用实例时生成实际 name 的完整预设，自定义结构不自动覆盖。保存映射通过设置文件中的 `saveTemplate` 配置，直接修改设置文件不自动套预设。
+
+Key 保存在本机独立明文文件，权限 `0600`；同步设置只保存凭据引用。LLM 使用真实非流式 HTTP，严格接受纯 JSON。获取失败仍可手填，晚到结果和重试不覆盖手改稿。保存成功以主进程写入回执为准。
 
 ## 使用范围
 
-CaretLex 使用简体中文界面，只提供手动存词。选词入口接受单个英文单词以及单词内部的 ASCII 撇号或连字符，不处理短语，也不连接在线或离线词典。
+CaretLex 使用简体中文界面，支持纯手动存词与单个启用的自动 provider。选词入口接受单个英文单词以及单词内部的 ASCII 撇号或连字符，不处理短语。自动类型为 `LLM`，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini Generate Content。
+
+设置文件包含 `theme`、`providers` 和 `saveTemplate`。无法解析时可点击“恢复默认设置”重新写入；不会自动覆盖损坏文件或转换旧脚注。分句按明确英文规则和样例验收；AI 返回需人工检查。默认 lemma 确认后锁定，自定义结构由用户维护。
 
 本地图片限制在 Markdown 文件所在目录及其子目录内。远程图片需要点击后加载；外部网页链接交给系统浏览器打开。
 
@@ -72,7 +79,10 @@ npm run dev
 ```sh
 npm run typecheck
 npm test
+npm run build
 ```
+
+自动测试与桌面 smoke 使用本地模拟 HTTP 服务验证协议；不代表某个线上服务的联调验证。
 
 Linux x64 安装产物通过 `npm run dist:linux` 构建到 `dist/`。当前 deb 配置包含 `.invalid` 占位发行信息，只用于本地测试。
 
@@ -81,4 +91,5 @@ Linux x64 安装产物通过 `npm run dist:linux` 构建到 `dist/`。当前 deb
 - [产品说明](doc/PRODUCT.md)
 - [文件协议](doc/PROTOCOL.md)
 - [架构说明](doc/ARCHITECTURE.md)
+- [验证记录](doc/VALIDATION.md)
 - [品牌资产](branding/README.md)

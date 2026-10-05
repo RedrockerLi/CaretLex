@@ -1,171 +1,102 @@
 # 文件协议
 
-本文定义 CaretLex 当前读取和写入的 Markdown 词条、设置 JSON 与导出 JSON。协议实现位于 `src/shared/protocol.ts`、`src/shared/patch.ts` 和 `src/shared/settings.ts`。
+CaretLex 将词条保存在标准 Markdown 脚注中。协议核心位于 `src/shared/protocol.ts`、`patch.ts`、`settings.ts`、`mapping.ts` 和 `entries.ts`。
 
-## 术语
+## Markdown 与身份
 
-| 术语 | 含义 |
-|---|---|
-| 原文词形 | 正文中实际显示的英文单词，例如 `went` |
-| lemma | 用户确认的词条身份，例如 `go` |
-| 词条引用 | 紧跟原文词形的 `[^w-lemma]` |
-| 词条定义 | 使用相同标签、值为单行 JSON 的脚注定义 |
-| 托管区块 | 文末两条专用注释之间、允许应用改写的定义区 |
-| 区块外词条 | 托管区块外的合法词条定义，只读 |
-
-## Markdown 词条
-
-### 标签
-
-词条标签的完整规则是：
+标签为 `w-lemma`，lemma 使用小写 ASCII 英文字母，允许内部 ASCII 撇号或连字符，IPC 长度上限 128：
 
 ```regex
 ^w-([a-z]+(?:['-][a-z]+)*)$
 ```
 
-捕获部分是 lemma。lemma 使用小写 ASCII 英文字母，内部可以包含 ASCII 撇号 `'` 或连字符 `-`。`go`、`can't` 和 `mother-in-law` 合法；`Go`、`go2`、`-go`、`go--home` 和排印撇号不合法。
-
-正文引用紧跟词形：
+正文真实词形保持原值，引用紧邻词形；同 lemma 的多个引用共用一个定义。定义值由 `JSON.stringify` 输出为单个物理行：
 
 ```markdown
-went[^w-go] and goes[^w-go]
-```
+The bank[^w-bank] is beside the river bank[^w-bank].
 
-同一 lemma 的多处引用共用一条定义。代码块、行内代码和转义后的字面量不作为引用处理。
-
-### 定义
-
-定义必须是单个物理行：
-
-```markdown
-[^w-go]: {"word":"go","translation":"去","example":"She went home."}
-```
-
-定义只有在以下条件同时成立时才是词条：
-
-1. 标签严格匹配 `w-lemma`；
-2. 归一化后的标签只有一个定义；
-3. 冒号后的同一物理行可以被 `JSON.parse` 完整解析；
-4. 解析结果是有限、可序列化的 JSON 值。
-
-JSON 根值可以是对象、数组、字符串、有限数字、布尔值或 `null`。标签中的 lemma 是词条身份；对象内的 `word` 字段没有身份语义。默认录入表单生成 `word`、`translation`、`example` 三个字符串字段，自定义模板不受该对象形状限制。
-
-### 托管区块
-
-标记必须作为顶层 HTML 注释各占一行：
-
-```markdown
 <!-- caretlex:vocab:start -->
-[^w-go]: {"word":"go","translation":"去","example":"She went home."}
+[^w-bank]: {"lemma":"bank","contexts":[{"original_sentence":"The [bank] is beside the river bank.","meaning_in_context":"（名词）银行","english_definition":"a financial institution"},{"original_sentence":"The bank is beside the river [bank].","meaning_in_context":"（名词）河岸","english_definition":"land beside a river"}],"other_meanings":[]}
 <!-- caretlex:vocab:end -->
 ```
 
-一篇文档最多包含一对标记。开始标记位于结束标记前，开始标记带行尾，结束标记后只允许空白。区块内部只允许空行和合法的单行 `w-lemma` 定义。
+托管标记是各占一行的顶层 HTML 注释，一篇文档最多一对，位于文末，结束后仅允许空白。区块内部只允许空行和合法单行 `w-lemma` JSON 定义。写入按 lemma 排序，使用文档首个换行形式。代码、转义字面量与普通脚注保留。
 
-应用创建或更新区块时按 lemma 的 ASCII 字典序排列定义，使用 `JSON.stringify` 生成定义值，并使用文档中检测到的第一种换行符。区块外内容不经过 Markdown 序列化。空区块保留两条标记。
+通用 JSON 根值可以是对象、数组、字符串、有限数字、布尔值或 null。默认对象含根级 lemma、成对的 contexts 和 other_meanings；保存过的根级 lemma 与脚注身份保持一致，不能修改或删除。自定义/旧结构不自动转换；自动 contexts 合并和当前语境摘要只识别默认结构。
 
-### 完整示例
+添加总是采用用户确认的完整最终值。已有同名定义也更新值，同位置相同引用允许更新定义；只有引用和定义均无变化才 no-op。其他词条引用不可叠加。区块外定义只读，重复归一化定义、非法托管 JSON 或损坏标记阻止词条操作与导出。源码编辑可用于人工修复。
 
-```markdown
-# A short trip
+## Article 与 contexts
 
-She went[^w-go] to school. He goes[^w-go] home.
-A note[^1] remains an ordinary footnote.
+article 包含 `original_word` 与 `original_sentence`。原词保留真实大小写、词形；原句按选区 UTF-16 映射位置插入一对方括号，已有括号保留。marker 仅存在于来源数据和保存 JSON，不改变正文。
 
-[^1]: This is a normal note.
+自动合并复制已有完整值，只按 `original_sentence` 的完整字符串追加 contexts。相同 key 保留原 context，包括人工释义。other_meanings 和其他根字段保留，不做语义去重。无法识别的结构明确失败，由用户整理最终 JSON。主进程保存时不再次合并。
 
-<!-- caretlex:vocab:start -->
-[^w-go]: {"word":"go","translation":"去","example":"She went to school."}
-<!-- caretlex:vocab:end -->
-```
-
-普通 GFM 阅读器把 `w-` 引用当作普通脚注。CaretLex 阅读视图隐藏有效词条的脚注编号和定义，并把相邻原文词形渲染为词条锚点。
-
-## 诊断与可写性
-
-| 文档状态 | 读取行为 | 词条写入与导出 |
-|---|---|---|
-| 合法托管定义 | 建立词条和引用索引 | 允许 |
-| 合法区块外定义 | 建立只读词条 | 不允许编辑、删除或创建同 lemma 托管定义 |
-| 区块外定义的 JSON 无效 | 作为普通脚注并显示 warning | 文档其他词条仍可写；同 lemma 存词因定义冲突被拒绝 |
-| 托管区块含无效 JSON 或未知非空行 | 保留原文并显示 error | 整篇文档的词条写入和导出关闭 |
-| `w-` 定义按 GFM 标识符归一化后重复 | 不选择其中一条作为词条 | 整篇文档的词条写入和导出关闭 |
-| 标记缺失、重复、逆序或不在文末 | 保留原文并显示 error | 整篇文档的词条写入和导出关闭 |
-| 没有托管区块 | 按普通 Markdown 阅读 | 允许添加词条；导出 `{}` |
-
-阻断状态只影响词条添加、编辑、删除和导出。源码模式仍可保存用户明确编辑的完整文档。
-
-## 词条操作
-
-添加操作要求选区仍能唯一映射到当前 Markdown 中的完整英文单词，并要求磁盘 revision 与选择时一致。
-
-- 新 lemma：在选词末尾插入引用，并新增定义；没有区块时在文末创建区块。
-- 已有托管 lemma：只插入引用，定义值保持不变。
-- 相同引用已经紧邻选词：返回无变化结果。
-- 另一条 `w-` 引用已经紧邻选词：拒绝操作。
-- 编辑：用完整的新 JSON 值替换托管定义，并重新输出排序后的托管区块。
-- 删除：移除托管定义及所有 mdast 中真实匹配的引用，保留原文词形。
-
-词条操作生成互不重叠的源码补丁，不使用 Markdown 全文 stringify。文档 BOM 保持不变；托管区块以外未触及的文本和换行保持不变。
-
-## 设置 JSON
-
-设置文件是 UTF-8 JSON，schema 版本为 1。默认内容是：
+## 设置
 
 ```json
 {
-  "version": 1,
   "theme": "system",
-  "providers": ["manual"],
-  "entryTemplate": {
-    "word": "",
-    "translation": "",
-    "example": ""
-  },
-  "bindings": {
-    "/word": {"from": "lemma"},
-    "/translation": {"from": "manual", "label": "中文翻译", "required": true},
-    "/example": {"from": "sentence"}
+  "providers": [],
+  "saveTemplate": {
+    "lemma": "",
+    "contexts": [{"original_sentence": "article.original_sentence", "meaning_in_context": "", "english_definition": ""}],
+    "other_meanings": []
   }
 }
 ```
 
-字段规则：
+provider 实例为 `{name, type, enabled, config}`。name 为区分大小写的 `[A-Za-z_][A-Za-z0-9_-]*`，必须唯一，article 保留。type 必须注册；最多一个实例启用。手动填写是编辑流程，不是 provider。
 
-- `version` 固定为 `1`；
-- `theme` 是 `system`、`light` 或 `dark`；
-- `providers` 严格为 `["manual"]`；
-- `entryTemplate` 是任意 JSON 值；
-- `bindings` 的键是指向模板中现有位置的 RFC 6901 JSON Pointer；空字符串指向根值；
-- 绑定路径之间不能存在祖先/子孙重叠。
+`LLM` config 包含 `apiType`、`baseUrl`、`model`、可选 `apiKeyRef`、`prompt`、`responseTemplate`、`jsonMode`、`timeoutMs` 和 `maxOutputTokens`。默认 API 类型为 `openai-chat`，地址、模型为空，JSON mode 关闭，超时 60000 ms，最大输出 tokens 为 4096。停用配置可未填写完整地址/模型；启用需合法 HTTP/HTTPS 基础地址与非空模型。timeoutMs 和 maxOutputTokens 为 1–2147483647 的整数。Base URL 不含用户认证、查询或片段。
 
-绑定来源如下：
+prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 与 `{{JSON}}`。`{{JSON}}` 展开为当前实例 responseTemplate 的 JSON 文本，使用两空格缩进；默认 prompt 包含此变量。所有变量均一次字面替换，不递归求值。不支持的变量报错。响应示例声明对象必有字段及其类型；额外字段允许，数组样例声明统一元素结构，长度不限。空数组不声明元素内部格式，null 只声明 null 类型。检查不验证语义。
 
-| `from` | 写入值 | 额外字段 |
-|---|---|---|
-| `selected` | 阅读视图中的原文词形 | 无 |
-| `lemma` | 用户确认的 lemma | 无 |
-| `sentence` | 选词所在句子或文本块 | 无 |
-| `manual` | 录入卡中的手动文本 | 可用 `label` 和 `required` |
-| `constant` | 设置中给出的固定 JSON 值 | 必须有 `value` |
+普通设置快照包含路径、原始文本、原始字节 revision、可选已解析值、错误和恢复 token。可解码的非法文件可按原始 revision 重写；普通保存拒绝无法安全解码或超限的原文件。用户点击“恢复默认设置”时，主进程校验绑定当前文件与路径指针字节的 token 后原子写入默认配置；该显式操作可以替换无法解析、无法解码或超限的配置。损坏的路径指针恢复为本机默认设置路径。冲突不覆盖，凭据文件保留。
 
-无效 JSON、未知 schema 版本、未知 provider、失效 JSON Pointer、重叠绑定和错误字段类型都会拒绝保存。设置文件上限为 1 MiB。
+## 保存映射
 
-## 导出 JSON
+来源命名空间为 article 与实际启用实例 name。字符串中的完整来源路径读取 JSON；返回数据复制后不再次作为模板执行。
 
-导出只包含当前文档有效托管区块中的词条。输出是没有尾随换行的单行 UTF-8 JSON 对象，键按 lemma 的 ASCII 字典序排列，值保持完整 JSON 类型：
+| 示例 | 行为 |
+|---|---|
+| `article.original_sentence` | 本地标记原句 |
+| `llm_main.lemma` | 来源字段 |
+| `llm_main.other_meanings[].meaning` | 展开列表、读取每项字段 |
+| `llm_main.other_meanings[0].meaning` | 指定下标 |
+| `llm_main.other_meanings` | 复制完整 JSON 子树 |
+| `{"$literal": ...}` | 内部值不求值 |
+| 其他普通 JSON 值 | 保留字面量 |
 
-```json
-{"go":{"word":"go","translation":"去","example":"She went to school."}}
-```
+动态输出数组只能有一个元素模板，并且只能展开一个来源列表。同列表字段共享当前下标，标量可广播；源列表为零项时输出 `[]`。嵌套数组需明确对应层级，不 zip、不拼接、不平铺、不猜测多个列表关系。固定数组逐项实例化。第一版路径字段为可引用标识，复杂字段名可整体引用父 JSON 子树。
 
-空区块或不存在区块时输出 `{}`。区块外词条不参与导出。阻断诊断存在时拒绝导出。导出文件不作为应用数据源，修改导出文件不会修改 Markdown。
+缺失字符串字段由响应示例确定类型，填 `""` 并诊断；不可用展开列表输出 `[]`；其他缺失值用 null。错误行保留行数与其他合法字段。完整子树绑定存在结构错误时用 null 待手填，不执行未配置修补。合法 null、空数组与缺失字段分别识别。来源路径不会作为未解析绑定直接写入。
 
-## 文件级约束
+## LLM HTTP 与凭据
 
-- Markdown 必须是严格 UTF-8，可以带 UTF-8 BOM，大小不超过 16 MiB；
-- 源码范围使用去除文件 BOM 后的 UTF-16 偏移；
-- 文档 revision 是包含 BOM 的原始字节 SHA-256；
-- 单个 IPC 词条值序列化后不超过 1 MiB；
-- 保存使用同目录临时文件和原子 rename，并在提交前比较 revision；
-- revision 冲突保留内存草稿，不覆盖磁盘文件。
+API 类型决定协议，基础路径保留，尾部 `/` 去除后追加表中端点，不自动添加版本路径。生产使用真实 HTTP POST，非流式输出；所有请求均含本地替换后的 Prompt 和响应 JSON 示例说明。
+
+| apiType | 追加端点 | 请求与认证 | JSON mode | 响应文本 |
+|---|---|---|---|---|
+| `openai-chat` | `/chat/completions` | model、messages、max_completion_tokens、stream: false；Bearer Key | response_format.type = json_object | choices[0].message.content，finish_reason = stop |
+| `openai-responses` | `/responses` | model、instructions、input、max_output_tokens、stream: false；Bearer Key | text.format.type = json_object | completed output 中 message.content 的 output_text |
+| `anthropic-messages` | `/messages` | model、system、messages、max_tokens、stream: false；x-api-key，anthropic-version = 2023-06-01 | 不提供；Prompt 请求 JSON | assistant message 的 text，stop_reason = end_turn |
+| `gemini` | `/models/{model}:generateContent` | systemInstruction、contents、generationConfig.maxOutputTokens；x-goog-api-key | generationConfig.responseMimeType = application/json | candidates[0].content.parts.text，finishReason = STOP |
+
+协议依据官方 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)、[Gemini Generate Content](https://ai.google.dev/api/generate-content) 与 [Gemini API Key](https://ai.google.dev/gemini-api/docs/api-key)。Gemini 模型可带 `models/` 前缀，模型名称只允许字母、数字、下划线、点和连字符。
+
+只接受成功 HTTP、严格 UTF-8 外层 JSON 和协议声明位置的纯 JSON 文本。拒绝空内容、拒绝/过滤、截断和工具调用；协议声明的 reasoning/thinking 内容不参与 JSON 解析。不自动重试、修补或切换接口。JSON mode 不能代替本地字段检查，兼容服务需自行支持所选协议和参数。
+
+凭据位于本机用户数据目录 `credentials.json`，内容为稳定 `key-UUID → Key` 的明文映射，原子写入权限 0600。新 Key 创建新引用，旧记录保持有效。配置和 IPC 凭据状态只含引用或存在性，不返回 Key。没有引用才匿名请求，有引用缺失则失败。损坏文件保留字节。`credentials.json` 与 `settings-path.json` 禁止作为设置路径。
+
+## 文件与资源限制
+
+- Markdown 严格 UTF-8，可含 BOM，上限 16 MiB。
+- SourceSpan 是不计文件 BOM 的 UTF-16 左闭右开源码范围。
+- revision 是含 BOM 原始字节的 SHA-256。
+- 设置、单词条 JSON、AI 请求体及响应体各上限 1 MiB，按实际字节检查。
+- 保存绑定编辑开始时的 documentId、baseRevision 和真实选区，禁止按当前标签推断目标。
+- 同目录临时文件 fsync，提交前检查 revision，原子 rename 保留 BOM 和未触及正文。
+- 冲突、取消或超限保留内存稿件，不截断，不宣告成功。
+
+导出为单行 UTF-8 `lemma → 完整值` 对象，按 lemma 排序，只含当前文档托管词条；空区块为 `{}`。

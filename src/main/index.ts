@@ -5,12 +5,19 @@ import { readFile, rename, rm, open, constants } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { DocumentRepository, SettingsRepository, CaretLexError, canonicalSavePath, revision, type OpenDocument } from './repositories'
 import { planAdd, planDelete, planEdit, exportVocabulary } from '../shared/patch'
+import { ProviderService } from './providers'
+import { CredentialRepository } from './credentials'
+import { createLlmAdapter } from './llm'
+import { documentToWire } from '../shared/document-wire'
+import { validateIdentity } from '../shared/entries'
 import { serializeJsonValue } from '../shared/json'
 import type { DocumentResult, SaveResult } from '../shared/bridge'
 import type { SourceSpan } from '../shared/types'
 
 const documents = new DocumentRepository()
 let settings: SettingsRepository
+let providers: ProviderService
+let credentials: CredentialRepository
 let mainWindow: BrowserWindow | undefined
 let closeAllowed = false
 let initialFile: string | undefined = process.argv.slice(1).find((arg) => /\.md(?:own)?$/i.test(arg) && !arg.startsWith('-'))
@@ -18,10 +25,11 @@ const MAX_INPUT_TEXT_BYTES = 16 * 1024 * 1024
 const moduleDirectory = __dirname
 
 function asDocumentResult(value: OpenDocument): DocumentResult {
-  return { snapshot: value.snapshot, parsed: value.parsed }
+  return documentToWire(value)
 }
 
 function sendDocument(documentId: string, value: OpenDocument): void {
+  providers?.cancelAll(documentId)
   mainWindow?.webContents.send('document:changed', { documentId, document: asDocumentResult(value) })
 }
 
@@ -134,7 +142,9 @@ function registerHandlers(): void {
 
   ipcMain.handle('document:close', async (event, rawId: unknown) => {
     guard(event)
-    await documents.close(requireString(rawId, 'documentId', 64))
+    const id = requireString(rawId, 'documentId', 64)
+    providers.cancelAll(id)
+    await documents.close(id)
   })
 
   ipcMain.handle('document:save-source', async (event, raw: unknown) => {
@@ -173,11 +183,14 @@ function registerHandlers(): void {
     const selected = requireString(input.selected, 'selected', 128)
     const lemma = requireString(input.lemma, 'lemma', 128)
     assertJsonSize(input.value)
-    const current = await currentForMutation(id, baseRevision)
+    const current = await documents.verifyRevision(id, baseRevision)
+    const identity = validateIdentity(input.value as never, lemma, current.parsed.entries.get(lemma)?.value)
+    if (!identity.ok) throw new CaretLexError(identity.error.code, identity.error.message)
     const planned = planAdd(current.snapshot.text, { span, selected, lemma, value: input.value as never })
     if (!planned.ok) throw new CaretLexError(planned.error.code, planned.error.message)
     if (!planned.value.changed) return resultWithChange(current, false)
-    const saved = await documents.saveSource(id, planned.value.text, current.snapshot.revision)
+    const saved = current.snapshot.path ? await documents.saveSource(id, planned.value.text, current.snapshot.revision) : await saveAsDialog(id, planned.value.text, baseRevision)
+    if (!saved) throw new CaretLexError('SAVE_CANCELLED', '保存位置选择已取消，草稿保留。')
     return resultWithChange(saved, true)
   })
 
@@ -188,6 +201,8 @@ function registerHandlers(): void {
     const lemma = requireString(input.lemma, 'lemma', 128)
     assertJsonSize(input.value)
     const current = await currentForMutation(id, requireBaseRevision(input.baseRevision))
+    const identity = validateIdentity(input.value as never, lemma, current.parsed.entries.get(lemma)?.value)
+    if (!identity.ok) throw new CaretLexError(identity.error.code, identity.error.message)
     const planned = planEdit(current.snapshot.text, { lemma, value: input.value as never })
     if (!planned.ok) throw new CaretLexError(planned.error.code, planned.error.message)
     if (!planned.value.changed) return resultWithChange(current, false)
@@ -239,11 +254,16 @@ function registerHandlers(): void {
     return settings.save(input.value, requireBaseRevision(input.baseRevision))
   })
 
+  ipcMain.handle('settings:reset', (event, token: unknown) => {
+    guard(event)
+    return settings.resetDefaults(requireString(token, 'resetToken', 128))
+  })
+
   ipcMain.handle('settings:migrate', async (event) => {
     guard(event)
     if (!mainWindow) return null
     let current: Awaited<ReturnType<SettingsRepository['load']>> | undefined
-    try { current = await settings.load() } catch {
+    try { current = await settings.load(); if (!current.value) throw new Error('invalid settings') } catch {
       const recovery = await dialog.showOpenDialog(mainWindow, {
         title: '选择可用的 CaretLex 设置 JSON',
         properties: ['openFile'],
@@ -260,6 +280,24 @@ function registerHandlers(): void {
     if (result.canceled || !result.filePath) return null
     return settings.migrateTo(result.filePath)
   })
+
+  const entryLocation = (raw: unknown) => {
+    const input = requireRecord(raw)
+    return { documentId: requireString(input.documentId, 'documentId', 64), baseRevision: requireBaseRevision(input.baseRevision), sourceSpan: requireSpan(input.sourceSpan), selected: requireString(input.selected, 'selected', 128) }
+  }
+  ipcMain.handle('provider:types', event => { guard(event); return providers.descriptions() })
+  ipcMain.handle('provider:preset', (event, raw: unknown) => {
+    guard(event); const input = requireRecord(raw); assertJsonSize(input.config)
+    return providers.preset(requireString(input.type, 'type', 128), requireString(input.name, 'name', 1024 * 1024), input.config as never)
+  })
+  ipcMain.handle('article:get', (event, raw: unknown) => { guard(event); return providers.article(entryLocation(raw)) })
+  ipcMain.handle('provider:fetch', (event, raw: unknown) => {
+    guard(event); const input = requireRecord(raw)
+    return providers.fetch({ ...entryLocation(raw), requestId: requireString(input.requestId, 'requestId', 128), settingsRevision: requireString(input.settingsRevision, 'settingsRevision', 128) })
+  })
+  ipcMain.handle('provider:cancel', (event, id: unknown) => { guard(event); providers.cancel(requireString(id, 'requestId', 128)) })
+  ipcMain.handle('credential:save', (event, key: unknown) => { guard(event); return credentials.save(requireString(key, 'key', 16384)) })
+  ipcMain.handle('credential:status', (event, ref: unknown) => { guard(event); return credentials.status(ref === undefined ? undefined : requireString(ref, 'apiKeyRef', 128)) })
 
   ipcMain.handle('system:open-external', async (event, rawUrl: unknown) => {
     guard(event)
@@ -383,7 +421,10 @@ function publishSettings(): void {
 app.whenReady().then(() => {
   if (!singleInstance) return
   settings = new SettingsRepository(app.getPath('userData'))
-  settings.setChangeListener(publishSettings)
+  credentials = new CredentialRepository(app.getPath('userData'))
+  const llm = createLlmAdapter({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref) })
+  providers = new ProviderService(documents, settings, new Map([['LLM', llm]]))
+  settings.setChangeListener(() => { providers.cancelAll(); publishSettings() })
   documents.setChangeListener(sendDocument)
   registerHandlers()
   createWindow()

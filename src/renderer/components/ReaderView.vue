@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, onBeforeUnmount, reactive, ref, watch, type VNodeChild } from 'vue'
-import { mapVisibleRange } from '../../shared/protocol'
+import { computed, defineComponent, h, onBeforeUnmount, reactive, ref, shallowReactive, shallowRef, watch, type VNodeChild } from 'vue'
+import { cloneJson } from '../../shared/json'
+import { EntrySession } from '../../shared/entry-session'
+import { referencesSource } from '../../shared/mapping'
+import type { EntryLocation, SaveResult } from '../../shared/bridge'
+import { mapVisibleRange, getAdjacentVocabularyReference } from '../../shared/protocol'
 import EntryComposer from './EntryComposer.vue'
 import VocabCard from './VocabCard.vue'
 import CodeBlock from './CodeBlock.vue'
@@ -32,19 +36,26 @@ const props = defineProps<{
   dark: boolean
   settings: AppSettings
   settingsAvailable: boolean
-  template: JsonValue
-  defaultBindings: boolean
+  settingsRevision: string
+  active: boolean
+  onSaveEntry: (location: EntryLocation, lemma: string, value: JsonValue) => Promise<SaveResult>
+  onDeleteEntry: (documentId: string, lemma: string, baseRevision?: string) => Promise<boolean>
+  onEditEntry: (documentId: string, baseRevision: string | undefined, lemma: string, value: JsonValue) => Promise<SaveResult>
 }>()
 const emit = defineEmits<{
-  add: [selection: SelectionContext, lemma: string, value: JsonValue, complete: (saved: boolean) => void]
-  edit: [lemma: string, value: JsonValue]
-  delete: [lemma: string]
+  unsaved: [value: boolean]
 }>()
 
 const readerRoot = ref<HTMLElement | null>(null)
 const selectedContext = ref<SelectionContext | null>(null)
 const selectionError = ref('')
 const composerOpen = ref(false)
+const session = shallowRef<EntrySession>()
+const cardEditing = ref(false)
+const hoverSentence = ref<string>()
+const hoverArticleError = ref('')
+const capturedHover = shallowRef<VocabRecord>()
+let hoverRequest = 0
 const selectionPoint = ref({ x: 0, y: 0 })
 const hoverLemma = ref('')
 const hoverPoint = ref({ x: 0, y: 0 })
@@ -55,15 +66,17 @@ let closeTimer: number | undefined
 const parsed = computed(() => props.tab.document.parsed)
 const entries = computed(() => parsed.value.entries)
 const tree = computed(() => parsed.value.tree as unknown as AstNode)
-const hoveredEntry = computed(() => entries.value.get(hoverLemma.value) ?? null)
-const hasBlockingDiagnostics = computed(() => !parsed.value.writable)
+const hoveredEntry = computed(() => hoverLemma.value ? entries.value.get(hoverLemma.value) ?? capturedHover.value ?? null : null)
+const hasBlockingDiagnostics = computed(() => !parsed.value.writable || !!props.tab.document.error)
 const diagnostics = computed(() => parsed.value.diagnostics)
 const orphanReferences = computed(() => {
   const found: string[] = []
   const walk = (node: AstNode) => {
     const children = node.children ?? []
     children.forEach((child, index) => {
-      if (child.type === 'footnoteReference' && entryLemmaFor(child) && (!index || !canDecorate(children[index - 1]))) {
+      let previous = index - 1
+      while (previous >= 0 && children[previous].type === 'footnoteReference' && !entryLemmaFor(children[previous])) previous--
+      if (child.type === 'footnoteReference' && entryLemmaFor(child) && (previous < 0 || !canDecorate(children[previous]))) {
         found.push(String(child.identifier ?? child.label ?? '').slice(2))
       }
       walk(child)
@@ -85,65 +98,6 @@ function textRunIndex(node: AstNode) {
   return parsed.value.textRuns.findIndex((run) => run.sourceSpan.start === range.start && run.sourceSpan.end === range.end)
 }
 
-function nodeText(node: AstNode): string {
-  if (node.type === 'text' || node.type === 'inlineCode' || node.type === 'code' || node.type === 'html') return String(node.value ?? '')
-  return (node.children ?? []).map(nodeText).join(node.type === 'break' ? '\n' : '')
-}
-
-function sentenceAround(value: string, start: number, end: number) {
-  let left = start
-  let right = end
-  while (left > 0 && !/[.!?\n]/.test(value[left - 1])) left -= 1
-  while (right < value.length && !/[.!?\n]/.test(value[right])) right += 1
-  if (right < value.length && /[.!?]/.test(value[right])) right += 1
-  const sentence = value.slice(left, right).trim()
-  return sentence || value.trim()
-}
-
-function sentenceContext(sourceSpan: { start: number; end: number }, visibleStart: number, visibleEnd: number, fallback: string) {
-  function findBlock(node: AstNode, nearest?: AstNode): AstNode | undefined {
-    const range = nodeRange(node)
-    if (!range || range.start > sourceSpan.start || range.end < sourceSpan.end) return undefined
-    const candidate = ['paragraph', 'heading', 'tableCell'].includes(node.type) ? node : nearest
-    for (const child of node.children ?? []) {
-      const found = findBlock(child, candidate)
-      if (found) return found
-    }
-    return candidate
-  }
-  const block = findBlock(tree.value)
-  if (!block) return fallback
-
-  function collect(node: AstNode): { text: string; selectedStart?: number; selectedEnd?: number } {
-    if (node.type === 'footnoteReference' || node.type === 'definition') return { text: '' }
-    if (node.type === 'break') return { text: '\n' }
-    if (node.type === 'image' || node.type === 'imageReference') return { text: String(node.alt ?? '') }
-    if (!node.children?.length) {
-      const text = typeof node.value === 'string' ? node.value : ''
-      const range = nodeRange(node)
-      if (range?.start === sourceSpan.start && range.end === sourceSpan.end) {
-        return { text, selectedStart: visibleStart, selectedEnd: visibleEnd }
-      }
-      return { text }
-    }
-    let text = ''
-    let selectedStart: number | undefined
-    let selectedEnd: number | undefined
-    for (const child of node.children) {
-      const part = collect(child)
-      if (selectedStart === undefined && part.selectedStart !== undefined) {
-        selectedStart = text.length + part.selectedStart
-        selectedEnd = text.length + (part.selectedEnd ?? part.selectedStart)
-      }
-      text += part.text
-    }
-    return { text, selectedStart, selectedEnd }
-  }
-  const content = collect(block)
-  if (content.selectedStart === undefined || content.selectedEnd === undefined) return fallback
-  return sentenceAround(content.text, content.selectedStart, content.selectedEnd)
-}
-
 function elementFor(node: Node | null) {
   if (node instanceof Element) return node
   return node?.parentElement ?? null
@@ -157,6 +111,7 @@ function visibleOffset(runElement: HTMLElement, node: Node, offset: number) {
 }
 
 function inspectSelection() {
+  if (composerOpen.value || cardEditing.value) return
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !readerRoot.value) {
     selectedContext.value = null
@@ -195,30 +150,79 @@ function inspectSelection() {
   selectedContext.value = {
     sourceSpan: result.span,
     selected: result.selected,
-    sentence: sentenceContext(textRun.sourceSpan, from, to, sentenceAround(textRun.value, from, to)),
+    documentId: props.tab.id,
+    baseRevision: props.tab.document.snapshot.revision,
   }
   selectionPoint.value = {
-    x: Math.max(12, Math.min(rect.left, window.innerWidth - 320)),
-    y: Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - 500)),
+    x: Math.max(12, Math.min(rect.left, window.innerWidth - 490)),
+    y: Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - Math.min(720, window.innerHeight - 32))),
   }
   selectionError.value = ''
 }
 
-function startComposer() {
+function cancelRequest() {
+  const id = session.value?.requestId
+  if (session.value) session.value.requestId = undefined
+  if (id) void window.caretlex.cancelProvider(id).catch(() => undefined)
+}
+function closeComposer() {
+  cancelRequest(); composerOpen.value = false; session.value = undefined
+}
+async function startComposer() {
   inspectSelection()
-  if (selectedContext.value && !hasBlockingDiagnostics.value && props.settingsAvailable) composerOpen.value = true
-  else if (selectedContext.value && !props.settingsAvailable) selectionError.value = '设置文件无法读取，请先在设置页恢复设置后再存词。'
+  if (!selectedContext.value || hasBlockingDiagnostics.value || !props.settingsAvailable) return
+  const location = { ...selectedContext.value, sourceSpan: { ...selectedContext.value.sourceSpan } }
+  const adjacent = getAdjacentVocabularyReference(parsed.value, location.sourceSpan)
+  const bound = adjacent?.label?.match(/^w-([a-z]+(?:['-][a-z]+)*)$/)?.[1]
+  // Source JSON keys are data, including names that coincide with Vue's proxy flags.
+  const current = shallowReactive(new EntrySession(location, props.settings, props.settingsRevision, new Map(entries.value), bound)) as EntrySession
+  session.value = current; composerOpen.value = true
+  try {
+    const article = await window.caretlex.getArticle(location)
+    if (session.value !== current || current.invalid || !props.active) return
+    if (!article.ok) { current.error = article.error.message; current.issues.push(article.error); return }
+    current.setArticle(article.value)
+    if (props.settings.providers.some(profile => profile.enabled && referencesSource(props.settings.saveTemplate, profile.name))) await fetchSources()
+  } catch (error) { if (session.value === current) current.error = error instanceof Error ? error.message : String(error) }
 }
-
-function onComposerSubmit(value: { lemma: string; value: JsonValue }) {
-  if (!selectedContext.value) return
-  emit('add', selectedContext.value, value.lemma, value.value, (saved) => {
-    if (!saved) return
-    composerOpen.value = false
-    window.getSelection()?.removeAllRanges()
-  })
+async function fetchSources() {
+  const current = session.value
+  if (!current || current.invalid || current.saving || !props.settingsAvailable || !props.active) return
+  cancelRequest()
+  const id = crypto.randomUUID(); current.startRequest(id)
+  try {
+    const result = await window.caretlex.fetchSources(cloneJson({ ...current.location, requestId: id, settingsRevision: current.settingsRevision }))
+    if (session.value === current) current.receive(result)
+  } catch (error) { current.requestFailed(id, error instanceof Error ? error.message : String(error)) }
 }
-
+async function onComposerSubmit() {
+  const current = session.value
+  if (!current) return
+  const value = current.parse()
+  if (!value.ok) { current.error = value.message; return }
+  cancelRequest()
+  if (!current.confirm()) return
+  try {
+    await props.onSaveEntry(current.location, current.lemma, value.value)
+    if (session.value === current) { closeComposer(); window.getSelection()?.removeAllRanges() }
+  } catch (error) { current.error = error instanceof Error ? error.message : '保存失败，草稿保留。' }
+  finally { current.saving = false }
+}
+async function deleteHovered() {
+  const lemma = hoveredEntry.value?.lemma
+  if (!lemma) return
+  const saved = await props.onDeleteEntry(props.tab.id, lemma, props.tab.document.snapshot.revision)
+  if (saved) { hoverLemma.value = ''; cardEditing.value = false }
+}
+async function loadHoverArticle(location: EntryLocation) {
+  const id = ++hoverRequest; hoverSentence.value = undefined; hoverArticleError.value = ''
+  try {
+    const article = await window.caretlex.getArticle(location)
+    if (id !== hoverRequest) return
+    if (article.ok) hoverSentence.value = article.value.original_sentence
+    else hoverArticleError.value = article.error.message
+  } catch (error) { if (id === hoverRequest) hoverArticleError.value = error instanceof Error ? error.message : String(error) }
+}
 function entryLemmaFor(node: AstNode): string | null {
   const range = nodeRange(node)
   const reference = range
@@ -256,16 +260,19 @@ function textVNode(node: AstNode, anchorLemma?: string): VNodeChild {
   if (match) {
     if (match.index > 0) content.push(text.slice(0, match.index))
     const word = text.slice(match.index)
+    const run = parsed.value.textRuns[index]
+    const mapped = run ? mapVisibleRange(parsed.value, run.sourceSpan, match.index, text.length) : undefined
+    const location: EntryLocation | undefined = mapped?.ok ? { documentId: props.tab.id, baseRevision: props.tab.document.snapshot.revision, sourceSpan: mapped.span, selected: mapped.selected } : undefined
     content.push(h('span', {
       class: 'vocab-anchor',
       role: 'button',
       tabindex: 0,
       'aria-label': `查看 ${anchorLemma} 词条`,
-      onMouseenter: (event: MouseEvent) => showEntryAfterDelay(anchorLemma!, event),
+      onMouseenter: (event: MouseEvent) => showEntryAfterDelay(anchorLemma!, event, location),
       onMouseleave: scheduleCardClose,
-      onFocus: (event: FocusEvent) => showEntryImmediately(anchorLemma!, event),
-      onClick: (event: MouseEvent) => showEntryImmediately(anchorLemma!, event),
-      onKeydown: (event: KeyboardEvent) => { if (event.key === 'Enter' || event.key === ' ') showEntryImmediately(anchorLemma!, event) },
+      onFocus: (event: FocusEvent) => showEntryImmediately(anchorLemma!, event, location),
+      onClick: (event: MouseEvent) => showEntryImmediately(anchorLemma!, event, location),
+      onKeydown: (event: KeyboardEvent) => { if (event.key === 'Enter' || event.key === ' ') showEntryImmediately(anchorLemma!, event, location) },
     }, word))
   } else {
     content.push(text)
@@ -281,11 +288,14 @@ function renderInlineChildren(children: AstNode[], finalAnchor?: string): VNodeC
   const output: VNodeChild[] = []
   for (let index = 0; index < children.length; index += 1) {
     const node = children[index]
-    const next = children[index + 1]
+    let referenceIndex = index + 1
+    while (children[referenceIndex]?.type === 'footnoteReference' && !entryLemmaFor(children[referenceIndex])) referenceIndex++
+    const next = children[referenceIndex]
     const nextLemma = next?.type === 'footnoteReference' ? entryLemmaFor(next) : null
     if (nextLemma && canDecorate(node)) {
       output.push(renderNode(node, nextLemma))
-      index += 1
+      for (let ordinary = index + 1; ordinary < referenceIndex; ordinary++) output.push(renderFootnoteReference(children[ordinary]))
+      index = referenceIndex
       continue
     }
     if (node.type === 'footnoteReference' && entryLemmaFor(node)) {
@@ -302,25 +312,34 @@ function renderFootnoteReference(node: AstNode): VNodeChild {
   return h('sup', { class: 'footnote-reference' }, [h('a', { role: 'link', tabindex: 0, 'aria-label': `脚注 ${label}` }, label)])
 }
 
-function showEntryAfterDelay(lemma: string, event: MouseEvent) {
+function showEntryAfterDelay(lemma: string, event: MouseEvent, location?: EntryLocation) {
+  if (cardEditing.value) return
   if (hoverTimer !== undefined) window.clearTimeout(hoverTimer)
   if (closeTimer !== undefined) window.clearTimeout(closeTimer)
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
   hoverTimer = window.setTimeout(() => {
     hoverLemma.value = lemma
+    capturedHover.value = entries.value.get(lemma)
+    if (location) void loadHoverArticle(location)
+    else { hoverSentence.value = undefined; hoverArticleError.value = '无法定位该词形的真实源范围。' }
     hoverPoint.value = { x: rect.left, y: rect.bottom + 8 }
   }, 300)
 }
 
-function showEntryImmediately(lemma: string, event: MouseEvent | FocusEvent | KeyboardEvent) {
+function showEntryImmediately(lemma: string, event: MouseEvent | FocusEvent | KeyboardEvent, location?: EntryLocation) {
+  if (cardEditing.value) return
   if (hoverTimer !== undefined) window.clearTimeout(hoverTimer)
   const target = event.currentTarget as HTMLElement
   const rect = target.getBoundingClientRect()
   hoverLemma.value = lemma
+  capturedHover.value = entries.value.get(lemma)
+  if (location) void loadHoverArticle(location)
+  else { hoverSentence.value = undefined; hoverArticleError.value = '无法定位该词形的真实源范围。' }
   hoverPoint.value = { x: rect.left, y: rect.bottom + 8 }
 }
 
 function scheduleCardClose() {
+  if (cardEditing.value) return
   if (hoverTimer !== undefined) window.clearTimeout(hoverTimer)
   if (closeTimer !== undefined) window.clearTimeout(closeTimer)
   closeTimer = window.setTimeout(() => { hoverLemma.value = '' }, 250)
@@ -454,13 +473,24 @@ function renderDocument(): VNodeChild[] {
 
 const MarkdownBody = defineComponent(() => () => h('div', { class: 'markdown-content' }, renderDocument()))
 
+watch(() => composerOpen.value || cardEditing.value, value => emit('unsaved', value))
 watch(() => props.tab.document.snapshot.revision, () => {
   selectedContext.value = null
-  composerOpen.value = false
-  hoverLemma.value = ''
+  if (session.value && !session.value.saving) { cancelRequest(); session.value.invalidate('文档版本已变化；编辑稿保留，请关闭此稿并按新正文重新开始。') }
+  if (!cardEditing.value) hoverLemma.value = ''
+  ++hoverRequest
 })
-
+watch(() => props.tab.document.error, error => { if (error && session.value) { cancelRequest(); session.value.invalidate(error) } })
+watch(() => props.settingsRevision, () => {
+  cancelRequest()
+  if (session.value) {
+    if (props.settingsAvailable) session.value.replaceSettings(props.settings, props.settingsRevision)
+    else session.value.error = '设置不可用；自动获取已取消，手改稿仍可保存。'
+  }
+})
+watch(() => props.active, active => { if (!active) { cancelRequest(); ++hoverRequest } })
 onBeforeUnmount(() => {
+  cancelRequest(); ++hoverRequest; emit('unsaved', false)
   if (hoverTimer !== undefined) window.clearTimeout(hoverTimer)
   if (closeTimer !== undefined) window.clearTimeout(closeTimer)
 })
@@ -468,6 +498,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="reader-layout">
+    <div v-if="tab.document.error" class="notice notice-error" role="alert">{{ tab.document.error }}；稿件保留，无法使用旧范围提交。</div>
     <div v-if="hasBlockingDiagnostics" class="notice notice-error reader-blocking-notice" role="alert">
       文档结构存在问题，存词和导出已停用。修复源码后再试。
     </div>
@@ -487,32 +518,12 @@ onBeforeUnmount(() => {
       <button class="button button-primary button-small" type="button" :disabled="hasBlockingDiagnostics || !settingsAvailable" @mousedown.prevent="startComposer">存为词条</button>
     </div>
 
-    <div v-if="composerOpen && selectedContext && settingsAvailable" class="floating-panel" :style="{ left: `${selectionPoint.x}px`, top: `${selectionPoint.y}px` }">
-      <EntryComposer
-        :selected="selectedContext.selected"
-        :sentence="selectedContext.sentence"
-        :records="entries"
-        :settings="settings"
-        :template="template"
-        :default-bindings="defaultBindings"
-        :busy="busy"
-        @cancel="composerOpen = false"
-        @submit="onComposerSubmit"
-      />
+    <div v-if="composerOpen && session" class="floating-panel" :style="{ left: `${selectionPoint.x}px`, top: `${selectionPoint.y}px` }">
+      <EntryComposer :session="session" :busy="busy" @cancel="closeComposer" @submit="onComposerSubmit" @retry="fetchSources" />
     </div>
-
-    <VocabCard
-      v-if="hoveredEntry"
-      :entry="hoveredEntry"
-      :x="hoverPoint.x"
-      :y="hoverPoint.y"
-      :busy="busy"
-      @stay="keepCardOpen"
-      @leave="scheduleCardClose"
-      @close="hoverLemma = ''"
-      @edit="(value) => emit('edit', hoveredEntry!.lemma, value)"
-      @delete="emit('delete', hoveredEntry.lemma)"
-    />
+    <VocabCard v-if="hoveredEntry" :entry="hoveredEntry" :x="hoverPoint.x" :y="hoverPoint.y" :busy="busy"
+      :sentence="hoverSentence" :article-error="hoverArticleError" :document-id="tab.id" :revision="tab.document.snapshot.revision" :on-save="onEditEntry"
+      @editing="cardEditing = $event" @stay="keepCardOpen" @leave="scheduleCardClose" @close="hoverLemma = ''; cardEditing = false; ++hoverRequest" @delete="deleteHovered" />
 
     <aside v-if="diagnostics.length" class="diagnostics-panel" aria-label="文档诊断">
       <details>

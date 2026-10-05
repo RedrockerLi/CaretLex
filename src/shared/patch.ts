@@ -5,6 +5,8 @@ import {
   parseDocument,
   validateSelection
 } from './protocol'
+import { validateIdentity } from './entries'
+import { serializeJsonValue as serializeJson } from './json'
 import type { CoreResult, JsonValue, ParsedDocument, PatchPlan, SourcePatch, SourceSpan } from './types'
 
 export interface AddVocabularyInput {
@@ -25,47 +27,6 @@ export interface DeleteVocabularyInput {
 
 function fail<T = never>(code: string, message: string, span?: SourceSpan): CoreResult<T> {
   return { ok: false, error: { code, message, ...(span ? { span } : {}) } }
-}
-
-function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return false
-    seen.add(value)
-    if (Object.getOwnPropertySymbols(value).length !== 0) return false
-    if (Object.getOwnPropertyNames(value).some((key) => key !== 'length' && !/^(0|[1-9]\d*)$/.test(key))) return false
-    if (Object.keys(value).length !== value.length) return false
-    for (let i = 0; i < value.length; i++) {
-      if (!(i in value) || !isJsonValue(value[i], seen)) return false
-    }
-    seen.delete(value)
-    return true
-  }
-  if (typeof value === 'object') {
-    const object = value as object
-    if (seen.has(object)) return false
-    const prototype = Object.getPrototypeOf(object)
-    if (prototype !== Object.prototype && prototype !== null) return false
-    if (Object.getOwnPropertySymbols(object).length !== 0) return false
-    seen.add(object)
-    const valid = Object.entries(Object.getOwnPropertyDescriptors(object)).every(([key, descriptor]) =>
-      descriptor.enumerable && !descriptor.get && !descriptor.set && isJsonValue((value as Record<string, unknown>)[key], seen)
-    )
-    seen.delete(object)
-    return valid
-  }
-  return false
-}
-
-function serializeJson(value: unknown): string | undefined {
-  try {
-    if (!isJsonValue(value)) return undefined
-    const result = JSON.stringify(value)
-    return typeof result === 'string' ? result : undefined
-  } catch {
-    return undefined
-  }
 }
 
 function sourceOffset(text: string, offset: number): number {
@@ -104,7 +65,7 @@ function planFromPatches(text: string, patches: SourcePatch[]): CoreResult<Patch
   const merged = mergeSameOffsetInsertions(patches)
   const nextText = applyPatches(text, merged)
   if (nextText === undefined) return fail('overlapping-patches', '生成的源码补丁发生重叠，已取消写入。')
-  return { ok: true, value: { text: nextText, changed: nextText !== text, patches: merged } }
+  return { ok: true, value: { text: nextText, changed: nextText !== text, patches: nextText === text ? [] : merged } }
 }
 
 function documentWritable(parsed: ParsedDocument): CoreResult<true> {
@@ -124,7 +85,7 @@ function contentForDefinitions(
 ): string {
   const values = new Map<string, JsonValue>()
   for (const [lemma, entry] of parsed.entries) {
-    if (entry.managed && !removed.has(lemma)) values.set(lemma, overrides.get(lemma) ?? entry.value)
+    if (entry.managed && !removed.has(lemma)) values.set(lemma, overrides.has(lemma) ? overrides.get(lemma)! : entry.value)
   }
   for (const [lemma, value] of overrides) {
     if (!removed.has(lemma)) values.set(lemma, value)
@@ -169,8 +130,9 @@ function definitionConflict(parsed: ParsedDocument, lemma: string): CoreResult<t
 }
 
 export function planAdd(text: string, input: AddVocabularyInput): CoreResult<PatchPlan> {
-  if (!isValidLemma(input.lemma)) return fail('invalid-lemma', 'lemma 必须符合小写 ASCII 字母、撇号和连字符规则。')
+  if (!isValidLemma(input.lemma) || input.lemma.length > 128) return fail('invalid-lemma', 'lemma 必须符合小写 ASCII 字母、撇号和连字符规则。')
   const serialized = serializeJson(input.value)
+  if (serialized !== undefined && new TextEncoder().encode(serialized).byteLength > 1024 * 1024) return fail('value-too-large', '单词条 JSON 超过 1 MiB。')
   if (serialized === undefined) return fail('invalid-json-value', '词条必须是可序列化的完整 JSON 值。')
   const selection = validateSelection(text, input.span, input.selected)
   if (!selection.ok) return selection
@@ -181,39 +143,44 @@ export function planAdd(text: string, input: AddVocabularyInput): CoreResult<Pat
 
   const adjacent = getAdjacentVocabularyReference(parsed, input.span)
   if (adjacent) {
-    if (adjacent.label === `w-${input.lemma}`) return { ok: true, value: { text, changed: false, patches: [] } }
-    return fail('existing-vocabulary-reference', '这个词形后已有另一条词条引用，请先处理现有引用。', adjacent.span)
+    if (adjacent.label !== `w-${input.lemma}`) return fail('existing-vocabulary-reference', '这个词形后已有另一条词条引用，请先处理现有引用。', adjacent.span)
   }
 
   const conflict = definitionConflict(parsed, input.lemma)
   if (conflict && !conflict.ok) return conflict
   const existing = parsed.entries.get(input.lemma)
-  const patches: SourcePatch[] = [
+  const identity = validateIdentity(input.value, input.lemma, existing?.value)
+  if (!identity.ok) return identity
+  const patches: SourcePatch[] = adjacent ? [] : [
     { span: { start: input.span.end, end: input.span.end }, replacement: `[^w-${input.lemma}]` }
   ]
   if (existing && !existing.managed) {
     return fail('outside-definition', `词条 ${input.lemma} 的定义位于托管区块外，只能阅读，不能接管。`, existing.definitionSpan)
   }
-  const content = contentForDefinitions(parsed, existing ? new Map() : new Map([[input.lemma, input.value]]))
+  const content = contentForDefinitions(parsed, new Map([[input.lemma, input.value]]))
   patches.push(blockPatchOrAppend(parsed, content))
   return planFromPatches(text, patches)
 }
 
 export function planEdit(text: string, input: EditVocabularyInput): CoreResult<PatchPlan> {
-  if (!isValidLemma(input.lemma)) return fail('invalid-lemma', 'lemma 必须符合首版词条标签规则。')
-  if (serializeJson(input.value) === undefined) return fail('invalid-json-value', '词条必须是可序列化的完整 JSON 值。')
+  if (!isValidLemma(input.lemma) || input.lemma.length > 128) return fail('invalid-lemma', 'lemma 必须符合词条身份语法与长度限制。')
+  const serialized = serializeJson(input.value)
+  if (serialized !== undefined && new TextEncoder().encode(serialized).byteLength > 1024 * 1024) return fail('value-too-large', '单词条 JSON 超过 1 MiB。')
+  if (serialized === undefined) return fail('invalid-json-value', '词条必须是可序列化的完整 JSON 值。')
   const parsed = parseDocument(text)
   const writable = documentWritable(parsed)
   if (!writable.ok) return writable
   const entry = parsed.entries.get(input.lemma)
   if (!entry) return fail('missing-entry', `文档中没有有效词条 ${input.lemma}。`)
   if (!entry.managed) return fail('outside-definition', `词条 ${input.lemma} 位于托管区块外，只能阅读，不能编辑。`, entry.definitionSpan)
+  const identity = validateIdentity(input.value, input.lemma, entry.value)
+  if (!identity.ok) return identity
   const content = contentForDefinitions(parsed, new Map([[input.lemma, input.value]]))
   return planFromPatches(text, [{ span: parsed.managedBlock.contentSpan!, replacement: content }])
 }
 
 export function planDelete(text: string, input: DeleteVocabularyInput): CoreResult<PatchPlan> {
-  if (!isValidLemma(input.lemma)) return fail('invalid-lemma', 'lemma 必须符合首版词条标签规则。')
+  if (!isValidLemma(input.lemma) || input.lemma.length > 128) return fail('invalid-lemma', 'lemma 必须符合词条身份语法与长度限制。')
   const parsed = parseDocument(text)
   const writable = documentWritable(parsed)
   if (!writable.ok) return writable

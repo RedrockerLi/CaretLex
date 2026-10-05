@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { isJsonValue } from '../shared/json'
 import type { CaretLexBridge } from '../shared/bridge'
 
 const documentHandlers = new Set<Parameters<CaretLexBridge['onDocumentChanged']>[0]>()
 const pendingDocuments: Parameters<CaretLexBridge['onDocumentChanged']>[0] extends (arg: infer T) => void ? T[] : never[] = []
 
 function copyJson(value: unknown): unknown {
+  if (!isJsonValue(value)) throw new TypeError('IPC 只接受有限、可序列化 JSON。')
   const serialized = JSON.stringify(value)
   if (serialized === undefined) throw new TypeError('IPC 只接受有效 JSON 值。')
   return JSON.parse(serialized)
@@ -19,6 +21,13 @@ ipcRenderer.on('document:changed', (_event, payload) => {
 })
 
 const bridge: CaretLexBridge = {
+  providerTypes: () => ipcRenderer.invoke('provider:types'),
+  providerPreset: input => ipcRenderer.invoke('provider:preset', { ...input, config: copyJson(input.config) }),
+  getArticle: input => ipcRenderer.invoke('article:get', input),
+  fetchSources: input => ipcRenderer.invoke('provider:fetch', input),
+  cancelProvider: id => ipcRenderer.invoke('provider:cancel', id),
+  saveCredential: key => ipcRenderer.invoke('credential:save', key),
+  credentialStatus: ref => ipcRenderer.invoke('credential:status', ref),
   takeStartupDocument: () => ipcRenderer.invoke('document:startup'),
   openMarkdown: () => ipcRenderer.invoke('document:open'),
   newDocument: () => ipcRenderer.invoke('document:new'),
@@ -35,6 +44,7 @@ const bridge: CaretLexBridge = {
   exportCurrentVocabulary: (documentId) => ipcRenderer.invoke('vocab:export', documentId),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (input) => ipcRenderer.invoke('settings:save', { ...input, value: copyJson(input.value) }),
+  resetSettings: token => ipcRenderer.invoke('settings:reset', token),
   chooseSettingsPath: () => ipcRenderer.invoke('settings:migrate'),
   openExternal: (url) => ipcRenderer.invoke('system:open-external', url),
   loadLocalImage: (documentId, source) => ipcRenderer.invoke('image:local', documentId, source),

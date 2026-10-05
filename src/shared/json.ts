@@ -7,6 +7,7 @@ export function isJsonValue(value: unknown, seen = new WeakSet<object>()): value
     if (seen.has(value) || Object.getOwnPropertySymbols(value).length !== 0) return false
     if (Object.getOwnPropertyNames(value).some((key) => key !== 'length' && !/^(0|[1-9]\d*)$/.test(key))) return false
     if (Object.keys(value).length !== value.length) return false
+    if (Object.entries(Object.getOwnPropertyDescriptors(value)).some(([key, descriptor]) => key !== 'length' && (!descriptor.enumerable || descriptor.get || descriptor.set))) return false
     seen.add(value)
     const valid = value.every((item, index) => index in value && isJsonValue(item, seen))
     seen.delete(value)
@@ -30,11 +31,13 @@ export function isJsonValue(value: unknown, seen = new WeakSet<object>()): value
 }
 
 export function serializeJsonValue(value: unknown): string | undefined {
-  if (!isJsonValue(value)) return undefined
   try {
+    if (!isJsonValue(value)) return undefined
     const serialized = JSON.stringify(value)
     return typeof serialized === 'string' ? serialized : undefined
   } catch {
     return undefined
   }
 }
+
+export function cloneJson<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }

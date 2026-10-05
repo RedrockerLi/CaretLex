@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { exportVocabulary, planAdd, planDelete, planEdit } from '../../src/shared/patch'
 import { mapVisibleRange, parseDocument, validateSelection } from '../../src/shared/protocol'
-import { defaultSettings, instantiateTemplate, parseSettings } from '../../src/shared/settings'
+import { defaultSettings, parseSettings } from '../../src/shared/settings'
 import type { JsonValue, TextRun } from '../../src/shared/types'
 
 const START = '<!-- caretlex:vocab:start -->'
@@ -188,7 +188,7 @@ describe('visible selection mapping', () => {
 })
 
 describe('targeted vocabulary patches', () => {
-  it('adds a new term, reuses it without changing the definition, and no-ops on a repeated click', () => {
+  it('adds a new term, writes the complete final value when reusing it, and no-ops on a repeated click', () => {
     const initial = '# Text\n\nShe went. He goes.\n'
     const first = add(initial, 'went', 'go', { word: 'go', translation: '去' })
     expect(first.ok).toBe(true)
@@ -202,7 +202,7 @@ describe('targeted vocabulary patches', () => {
     if (!second.ok) return
     expect(second.value.text).toContain('He goes[^w-go].')
     expect(second.value.text.match(/\[\^w-go\]:/g)).toHaveLength(1)
-    const repeated = add(second.value.text, 'goes', 'go', { word: 'other' })
+    const repeated = add(second.value.text, 'goes', 'go', { word: 'other', translation: 'ignored' })
     expect(repeated).toEqual({ ok: true, value: { text: second.value.text, changed: false, patches: [] } })
   })
 
@@ -242,36 +242,9 @@ describe('targeted vocabulary patches', () => {
   })
 })
 
-describe('settings schema and JSON Pointer bindings', () => {
-  it('accepts the default settings and instantiates a required manual field', () => {
+describe('settings boundary', () => {
+  it('starts with no automatic provider and rejects old settings', () => {
     expect(parseSettings(JSON.stringify(defaultSettings))).toEqual({ ok: true, value: defaultSettings })
-    const created = instantiateTemplate(defaultSettings, { selected: 'went', lemma: 'go', sentence: 'She went home.' }, {
-      '/translation': '去'
-    })
-    expect(created).toEqual({
-      ok: true,
-      value: { word: 'go', translation: '去', example: 'She went home.' }
-    })
-  })
-
-  it('supports a root JSON Pointer and arbitrary JSON values', () => {
-    const settings = parseSettings(JSON.stringify({
-      version: 1,
-      theme: 'dark',
-      providers: ['manual'],
-      entryTemplate: null,
-      bindings: { '': { from: 'constant', value: ['x', null] } }
-    }))
-    expect(settings.ok).toBe(true)
-    if (!settings.ok) return
-    expect(instantiateTemplate(settings.value, { selected: 'a', lemma: 'a', sentence: '' })).toEqual({ ok: true, value: ['x', null] })
-  })
-
-  it('rejects malformed pointers, missing targets, overlaps, and unsupported providers', () => {
-    const base = { version: 1, theme: 'system', providers: ['manual'], entryTemplate: { a: { b: '' } } }
-    expect(parseSettings(JSON.stringify({ ...base, bindings: { '/a~2b': { from: 'lemma' } } })).ok).toBe(false)
-    expect(parseSettings(JSON.stringify({ ...base, bindings: { '/absent': { from: 'lemma' } } })).ok).toBe(false)
-    expect(parseSettings(JSON.stringify({ ...base, bindings: { '/a': { from: 'lemma' }, '/a/b': { from: 'selected' } } })).ok).toBe(false)
-    expect(parseSettings(JSON.stringify({ ...base, providers: ['manual', 'online'], bindings: {} })).ok).toBe(false)
+    expect(parseSettings('{"version":1}').ok).toBe(false)
   })
 })

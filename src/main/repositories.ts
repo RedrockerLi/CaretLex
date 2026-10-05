@@ -5,6 +5,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from '
 import type { DocumentSnapshot } from '../shared/types'
 import { parseDocument } from '../shared/protocol'
 import { defaultSettings, parseSettings, type AppSettings } from '../shared/settings'
+import type { SettingsSnapshot } from '../shared/bridge'
 import { serializeJsonValue } from '../shared/json'
 
 const MAX_MARKDOWN_BYTES = 16 * 1024 * 1024
@@ -18,6 +19,7 @@ export class CaretLexError extends Error {
 }
 
 export interface OpenDocument {
+  error?: string
   snapshot: DocumentSnapshot
   parsed: ReturnType<typeof parseDocument>
 }
@@ -228,6 +230,7 @@ export class DocumentRepository {
       session.revision = actual
       session.bom = data.bom
       session.eol = detectEol(data.text)
+      this.changed?.(session.id, await this.toResult(session))
       throw new CaretLexError('CONFLICT', '磁盘文件已在外部修改。当前草稿已保留，请重新加载或另存为。')
     }
   }
@@ -316,8 +319,8 @@ export class DocumentRepository {
         session.bom = data.bom
         session.eol = detectEol(data.text)
     try { this.changed?.(session.id, await this.toResult(session)) } catch { /* The write is already committed. */ }
-      } catch {
-        this.changed?.(session.id, await this.toResult(session))
+      } catch (cause) {
+        this.changed?.(session.id, { ...await this.toResult(session), error: cause instanceof Error ? cause.message : '外部文档无法安全读取。' })
       }
     })
   }
@@ -336,185 +339,188 @@ interface Session {
 
 export class SettingsRepository {
   private settingsPath?: string
-  private currentRevision?: string
-  private current?: AppSettings
+  private snapshot?: SettingsSnapshot
   private watcher?: FSWatcher
   private changed?: () => void
-  private error?: string
   private queue: Promise<void> = Promise.resolve()
-
   constructor(private readonly userDataPath: string) {}
-
   setChangeListener(listener: () => void): void { this.changed = listener }
-
-  async load(): Promise<{ value: AppSettings; revision: string; path: string }> {
-    return this.runExclusive(() => this.loadUnlocked())
+  async load(): Promise<SettingsSnapshot> {
+    return this.runExclusive(async () => {
+      const before = this.snapshot; const next = await this.loadUnlocked()
+      if (before && (before.revision !== next.revision || before.error !== next.error)) this.changed?.()
+      return next
+    })
   }
-
-  private async loadUnlocked(): Promise<{ value: AppSettings; revision: string; path: string }> {
-    const path = await this.resolvePath()
-    let bytes: Buffer
-    try { bytes = await readFile(path) } catch (error) {
-      if (!isNotFound(error) || path !== resolve(this.userDataPath, 'settings.json')) throw new CaretLexError('SETTINGS_MISSING', `设置文件无法读取：${path}`)
-      const initial = defaultSettings
-      bytes = Buffer.from(`${JSON.stringify(initial, null, 2)}\n`, 'utf8')
-      await atomicSettingsWrite(path, bytes)
+  private async loadUnlocked(): Promise<SettingsSnapshot> {
+    let path = this.settingsPath ?? resolve(this.userDataPath, 'settings.json')
+    let observedRevision: string | undefined
+    let observedMissing = false
+    try {
+      path = await this.resolvePath()
+      let bytes: Buffer
+      try { bytes = await readFile(path) } catch (error) {
+        observedMissing = isNotFound(error)
+        if (!isNotFound(error) || this.snapshot || path !== resolve(this.userDataPath, 'settings.json')) throw new CaretLexError('SETTINGS_MISSING', `设置文件无法读取：${path}`)
+        bytes = Buffer.from(`${JSON.stringify(defaultSettings, null, 2)}\n`)
+        await atomicSettingsWrite(path, bytes)
+      }
+      observedRevision = revision(bytes)
+      this.snapshot = { path, revision: revision(bytes) }
+      if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置文件超过 1 MiB 限制。')
+      const text = decodeUtf8(bytes)
+      this.snapshot.text = text
+      const parsed = parseSettings(text)
+      if (!parsed.ok) this.snapshot.error = parsed.error.message
+      else this.snapshot.value = parsed.value
+    } catch (cause) {
+      this.snapshot = { path, revision: this.snapshot?.path === path ? this.snapshot.revision : '', error: cause instanceof Error ? cause.message : '设置文件无法读取。' }
     }
-    if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置文件超过 1 MiB 限制。')
-    const parsed = parseSettings(decodeUtf8(bytes))
-    if (!parsed.ok) {
-      this.error = parsed.error.message
-      throw new CaretLexError('SETTINGS_INVALID', parsed.error.message)
-    }
-    this.settingsPath = path
-    this.current = parsed.value
-    this.currentRevision = revision(bytes)
-    this.error = undefined
+    try {
+      const state = await this.resetState()
+      // Bind recovery to bytes actually shown to the user, even if a file changes during load.
+      this.snapshot!.resetToken = (observedRevision !== undefined || observedMissing) && state.path === path
+        ? this.recoveryToken(path, state.pointerRevision, observedRevision) : state.token
+    } catch { /* Unreadable paths cannot be overwritten safely. */ }
     this.startWatch()
-    return { value: parsed.value, revision: this.currentRevision, path }
+    return this.snapshot!
   }
-
-  async save(value: unknown, baseRevision?: string): Promise<{ value: AppSettings; revision: string; path: string }> {
+  async save(value: unknown, baseRevision?: string): Promise<SettingsSnapshot> {
     return this.runExclusive(async () => {
       if (!baseRevision) throw new CaretLexError('REVISION_REQUIRED', '保存设置必须提供加载时的文件版本。')
       const path = await this.resolvePath()
-      const parsedJson = serializeJsonValue(value)
-      if (!parsedJson || Buffer.byteLength(parsedJson, 'utf8') > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置必须是有限、可序列化且不超过 1 MiB 的 JSON 值。')
-      const parsed = parseSettings(parsedJson)
+      const json = serializeJsonValue(value)
+      if (!json || Buffer.byteLength(json) > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置必须是有限且不超过 1 MiB 的 JSON。')
+      const parsed = parseSettings(json)
       if (!parsed.ok) throw new CaretLexError('SETTINGS_INVALID', parsed.error.message)
-      const loaded = await this.loadUnlocked()
-      if (loaded.revision !== baseRevision) throw new CaretLexError('CONFLICT', '设置文件已在外部修改，未覆盖。请重新加载。')
       const currentBytes = await readFile(path)
-      const currentRevision = revision(currentBytes)
-      if (currentRevision !== loaded.revision) throw new CaretLexError('CONFLICT', '设置文件在保存期间发生变化，未覆盖。')
-      const bytes = Buffer.from(`${JSON.stringify(parsed.value, null, 2)}\n`, 'utf8')
-      await atomicSettingsWrite(path, bytes, currentRevision)
-      this.current = parsed.value
-      this.currentRevision = revision(bytes)
-      this.error = undefined
-      return { value: parsed.value, revision: this.currentRevision, path }
+      if (currentBytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '原设置文件超过 1 MiB，请重新选择文件。')
+      decodeUtf8(currentBytes) // Never replace bytes that cannot be safely decoded.
+      if (revision(currentBytes) !== baseRevision) throw new CaretLexError('CONFLICT', '设置文件已在外部修改，草稿保留，未覆盖。')
+      const text = `${JSON.stringify(parsed.value, null, 2)}\n`
+      const bytes = Buffer.from(text)
+      if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '格式化后的设置超过 1 MiB。')
+      await atomicSettingsWrite(path, bytes, baseRevision)
+      this.snapshot = { value: parsed.value, text, revision: revision(bytes), path }
+      try {
+        const state = await this.resetState()
+        this.snapshot.resetToken = this.recoveryToken(path, state.pointerRevision, revision(bytes))
+      } catch { /* The settings write is already committed. */ }
+      this.changed?.()
+      return this.snapshot
     })
   }
-
-  async migrateTo(targetPath: string): Promise<{ value: AppSettings; revision: string; path: string }> {
+  private recoveryToken(path: string, pointerRevision?: string, fileRevision?: string): string {
+    return revision(Buffer.from(JSON.stringify({ path, pointerRevision, fileRevision })))
+  }
+  private async resetState() {
+    const pointer = resolve(this.userDataPath, 'settings-path.json')
+    const pointerRevision = await tryRevision(pointer)
+    let path: string
+    let brokenPointer = false
+    try { path = await this.resolvePath() } catch (cause) {
+      if (!(cause instanceof CaretLexError) || cause.code !== 'SETTINGS_POINTER_INVALID') throw cause
+      path = resolve(this.userDataPath, 'settings.json'); brokenPointer = true
+    }
+    await this.assertAllowedPath(path)
+    const fileRevision = await tryRevision(path)
+    const token = this.recoveryToken(path, pointerRevision, fileRevision)
+    return { token, path, fileRevision, pointer, pointerRevision, brokenPointer }
+  }
+  async resetDefaults(token: string): Promise<SettingsSnapshot> {
+    return this.runExclusive(async () => {
+      const state = await this.resetState()
+      if (token !== state.token) throw new CaretLexError('CONFLICT', '设置文件或位置已变化，请重新加载后恢复默认设置。')
+      await atomicSettingsWrite(state.path, Buffer.from(`${JSON.stringify(defaultSettings, null, 2)}\n`), state.fileRevision)
+      if (state.brokenPointer) {
+        await atomicSettingsWrite(state.pointer, Buffer.from(`${JSON.stringify({ path: state.path }, null, 2)}\n`), state.pointerRevision)
+        this.settingsPath = state.path
+      }
+      const next = await this.loadUnlocked()
+      this.changed?.()
+      return next
+    })
+  }
+  private async assertAllowedPath(destination: string): Promise<void> {
+    for (const name of ['settings-path.json', 'credentials.json']) {
+      const local = resolve(this.userDataPath, name)
+      if (destination === local || destination === await canonicalSavePath(local)) throw new CaretLexError('SETTINGS_PATH_RESERVED', '本机凭据文件和设置路径指针不能用作设置 JSON 文件。')
+    }
+  }
+  async migrateTo(targetPath: string): Promise<SettingsSnapshot> {
     return this.runExclusive(async () => {
       const current = await this.loadUnlocked()
+      if (!current.value) throw new CaretLexError('SETTINGS_INVALID', '请恢复默认设置，或选择可用的设置文件。')
       const destination = await canonicalSavePath(targetPath)
-      const pointer = resolve(this.userDataPath, 'settings-path.json')
-      const pointerIdentity = await canonicalSavePath(pointer)
-      if (destination === pointer || destination === pointerIdentity) throw new CaretLexError('SETTINGS_PATH_RESERVED', '本机设置路径指针不能用作设置 JSON 文件。')
+      await this.assertAllowedPath(destination)
       if (destination === current.path) return current
-      const priorPath = current.path
-      const bytes = Buffer.from(`${JSON.stringify(current.value, null, 2)}\n`, 'utf8')
-      const destinationRevision = await tryRevision(destination)
-      await atomicSettingsWrite(destination, bytes, destinationRevision)
-      const sourceRevision = await tryRevision(priorPath)
-      if (sourceRevision !== current.revision) throw new CaretLexError('CONFLICT', '迁移期间原设置文件已变化；新副本已保留，尚未切换设置路径。')
-      await mkdir(this.userDataPath, { recursive: true })
-      await atomicSettingsWrite(pointer, Buffer.from(`${JSON.stringify({ path: destination }, null, 2)}\n`), await tryRevision(pointer))
-      if (priorPath === resolve(this.userDataPath, 'settings.json')) await rm(priorPath, { force: true }).catch(() => undefined)
-      this.stopWatch()
-      this.settingsPath = destination
-      this.currentRevision = revision(bytes)
-      this.current = current.value
-      this.startWatch()
-      return { value: current.value, revision: this.currentRevision, path: destination }
+      const bytes = Buffer.from(current.text!)
+      await atomicSettingsWrite(destination, bytes, await tryRevision(destination))
+      if (await tryRevision(current.path) !== current.revision) throw new CaretLexError('CONFLICT', '迁移期间原设置文件已变化；新副本已保留，尚未切换路径。')
+      await this.switchPath(destination)
+      return this.loadUnlocked()
     })
   }
-
-  async selectExistingPath(targetPath: string): Promise<{ value: AppSettings; revision: string; path: string }> {
+  async selectExistingPath(targetPath: string): Promise<SettingsSnapshot> {
     return this.runExclusive(async () => {
       const destination = await realpath(targetPath)
-      const pointer = resolve(this.userDataPath, 'settings-path.json')
-      const pointerIdentity = await canonicalSavePath(pointer)
-      if (destination === pointer || destination === pointerIdentity) throw new CaretLexError('SETTINGS_PATH_RESERVED', '本机设置路径指针不能用作设置 JSON 文件。')
+      await this.assertAllowedPath(destination)
       const bytes = await readFile(destination)
-      if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置文件超过 1 MiB 限制。')
+      if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new CaretLexError('SETTINGS_INVALID', '设置文件超过 1 MiB。')
       const parsed = parseSettings(decodeUtf8(bytes))
       if (!parsed.ok) throw new CaretLexError('SETTINGS_INVALID', parsed.error.message)
-      const priorPath = this.settingsPath ?? resolve(this.userDataPath, 'settings.json')
-      await mkdir(this.userDataPath, { recursive: true })
-      await atomicSettingsWrite(pointer, Buffer.from(`${JSON.stringify({ path: destination }, null, 2)}\n`), await tryRevision(pointer))
-      if (priorPath === resolve(this.userDataPath, 'settings.json') && priorPath !== destination) await rm(priorPath, { force: true }).catch(() => undefined)
-      this.stopWatch()
-      this.settingsPath = destination
-      this.current = parsed.value
-      this.currentRevision = revision(bytes)
-      this.error = undefined
-      this.startWatch()
-      return { value: parsed.value, revision: this.currentRevision, path: destination }
+      await this.switchPath(destination)
+      return this.loadUnlocked()
     })
   }
-
+  private async switchPath(destination: string): Promise<void> {
+    const pointer = resolve(this.userDataPath, 'settings-path.json')
+    await atomicSettingsWrite(pointer, Buffer.from(`${JSON.stringify({ path: destination }, null, 2)}\n`), await tryRevision(pointer))
+    const prior = this.settingsPath
+    this.stopWatch(); this.settingsPath = destination
+    if (prior === resolve(this.userDataPath, 'settings.json') && prior !== destination) await rm(prior, { force: true }).catch(() => undefined)
+    this.startWatch(); this.changed?.()
+  }
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.queue
     let release!: () => void
-    this.queue = new Promise<void>((resolveQueue) => { release = resolveQueue })
+    this.queue = new Promise<void>(done => { release = done })
     await previous
-    try { return await operation() }
-    finally { release() }
+    try { return await operation() } finally { release() }
   }
-
-  status(): { value: AppSettings; revision: string; path: string; error?: string } {
-    return {
-      value: this.current ?? defaultSettings,
-      revision: this.currentRevision ?? '',
-      path: this.settingsPath ?? resolve(this.userDataPath, 'settings.json'),
-      ...(this.error ? { error: this.error } : {})
-    }
-  }
-
+  status(): SettingsSnapshot { return this.snapshot ?? { path: this.settingsPath ?? resolve(this.userDataPath, 'settings.json'), revision: '', error: '设置尚未读取。' } }
   private async resolvePath(): Promise<string> {
     if (this.settingsPath) return this.settingsPath
-    const pointerPath = resolve(this.userDataPath, 'settings-path.json')
+    const pointer = resolve(this.userDataPath, 'settings-path.json')
     try {
-      const pointerBytes = await readFile(pointerPath)
-      const parsed = JSON.parse(decodeUtf8(pointerBytes)) as { path?: unknown }
+      const bytes = await readFile(pointer)
+      if (bytes.byteLength > MAX_SETTINGS_BYTES) throw new Error('路径指针过大')
+      const parsed = JSON.parse(decodeUtf8(bytes)) as { path?: unknown }
       if (typeof parsed.path !== 'string' || !isAbsolute(parsed.path)) throw new Error('路径指针格式无效')
-      this.settingsPath = resolve(parsed.path)
-    } catch (error) {
-      if (!isNotFound(error)) throw new CaretLexError('SETTINGS_POINTER_INVALID', '本机设置路径指针损坏；请在设置页重新选择文件。')
+      const path = resolve(parsed.path)
+      await this.assertAllowedPath(path)
+      this.settingsPath = path
+    } catch (cause) {
+      if (!isNotFound(cause)) throw new CaretLexError('SETTINGS_POINTER_INVALID', '本机设置路径指针损坏；请重新选择文件。')
       this.settingsPath = resolve(this.userDataPath, 'settings.json')
     }
     return this.settingsPath
   }
-
   private startWatch(): void {
     if (!this.settingsPath || this.watcher) return
     try {
       this.watcher = watchFile(dirname(this.settingsPath), { persistent: false }, (_event, name) => {
         if (name && name.toString() !== basename(this.settingsPath!)) return
-        void this.refreshExternal()
+        void this.runExclusive(async () => {
+          const before = this.snapshot
+          const next = await this.loadUnlocked()
+          if (next.revision !== before?.revision || next.error !== before?.error) this.changed?.()
+        })
       })
       this.watcher.on('error', () => this.stopWatch())
     } catch { this.watcher = undefined }
   }
-
   private stopWatch(): void { this.watcher?.close(); this.watcher = undefined }
-
-  private async refreshExternal(): Promise<void> {
-    await this.runExclusive(async () => {
-      if (!this.settingsPath) return
-      try {
-        const bytes = await readFile(this.settingsPath)
-        const nextRevision = revision(bytes)
-        if (nextRevision === this.currentRevision) return
-        const parsed = parseSettings(decodeUtf8(bytes))
-        if (!parsed.ok) {
-          this.error = parsed.error.message
-          this.changed?.()
-          return
-        }
-        this.current = parsed.value
-        this.currentRevision = nextRevision
-        this.error = undefined
-        this.changed?.()
-      } catch (cause) {
-        this.error = cause instanceof Error ? cause.message : '设置文件无法读取。'
-        this.changed?.()
-      }
-    })
-  }
 }
 
 export function revision(bytes: Uint8Array): string {
@@ -522,6 +528,7 @@ export function revision(bytes: Uint8Array): string {
 }
 
 export function decodeDocument(bytes: Buffer): { text: string; bom: boolean } {
+  if (bytes.byteLength > MAX_MARKDOWN_BYTES) throw new CaretLexError('TOO_LARGE', 'Markdown 文件超过 16 MiB 限制。')
   const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
   return { text: decodeUtf8(bom ? bytes.subarray(3) : bytes), bom }
 }
@@ -547,7 +554,7 @@ function assertText(text: unknown): asserts text is string {
     const unit = text.charCodeAt(index)
     if (unit >= 0xd800 && unit <= 0xdbff) {
       const next = text.charCodeAt(index + 1)
-      if (next < 0xdc00 || next > 0xdfff) throw new CaretLexError('INVALID_TEXT', '文档草稿含有未配对的 Unicode 代理字符，未保存。')
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new CaretLexError('INVALID_TEXT', '文档草稿含有未配对的 Unicode 代理字符，未保存。')
       index += 1
     } else if (unit >= 0xdc00 && unit <= 0xdfff) {
       throw new CaretLexError('INVALID_TEXT', '文档草稿含有未配对的 Unicode 代理字符，未保存。')
@@ -556,7 +563,7 @@ function assertText(text: unknown): asserts text is string {
   if (Buffer.byteLength(text, 'utf8') > MAX_MARKDOWN_BYTES) throw new CaretLexError('TOO_LARGE', 'Markdown 文件超过 16 MiB 限制。')
 }
 
-async function atomicSettingsWrite(path: string, bytes: Buffer, expected?: string): Promise<void> {
+export async function atomicSettingsWrite(path: string, bytes: Buffer, expected?: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temp = resolve(dirname(path), `.caretlex-settings-${process.pid}-${randomUUID()}.tmp`)
   let handle: Awaited<ReturnType<typeof open>> | undefined

@@ -13,34 +13,13 @@ const settingsOpen = computed(() => workspace.settingsOpen)
 const activeTab = computed(() => workspace.activeTab)
 const currentTheme = computed(() => workspace.theme)
 const effectiveDark = computed(() => currentTheme.value === 'dark' || (currentTheme.value === 'system' && systemDark.value))
-const settingsValue = computed(() => workspace.settingsSnapshot?.value ?? null)
+const runtimeSettings = computed(() => workspace.settingsExternal ?? workspace.settingsSnapshot)
+const credentialDraft = ref(false)
+const settingsValue = computed(() => runtimeSettings.value?.value ?? null)
 const settingsForReader = computed(() => settingsValue.value ?? defaultSettings)
 const settingsAvailable = computed(() => settingsValue.value !== null)
-const entryTemplate = computed<JsonValue>(() => settingsValue.value?.entryTemplate ?? defaultSettings.entryTemplate)
-
-function isDefaultBindings(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const bindings = value as Record<string, unknown>
-  const word = bindings['/word'] as Record<string, unknown> | undefined
-  const translation = bindings['/translation'] as Record<string, unknown> | undefined
-  const example = bindings['/example'] as Record<string, unknown> | undefined
-  return word?.from === 'lemma'
-    && translation?.from === 'manual'
-    && translation.required === true
-    && example?.from === 'sentence'
-    && Object.keys(bindings).length === 3
-}
-
-const defaultBindings = computed(() => {
-  if (!settingsValue.value) return false
-  const template = entryTemplate.value
-  if (!template || typeof template !== 'object' || Array.isArray(template)) return false
-  const keys = Object.keys(template)
-  return keys.join(',') === 'word,translation,example'
-    && isDefaultBindings(settingsValue.value.bindings)
-})
-
 const pendingAction = computed(() => workspace.pendingAction)
+const pendingEntryDraft = computed(() => pendingAction.value?.kind === 'close-window' ? Object.values(workspace.entryDrafts).some(Boolean) || credentialDraft.value : pendingAction.value && workspace.entryDrafts[pendingAction.value.tabId])
 let unwatchDocuments: (() => void) | undefined
 let unwatchSettings: (() => void) | undefined
 let unwatchClose: (() => void) | undefined
@@ -85,7 +64,7 @@ function switchMode(tab: WorkspaceTab) {
 }
 
 function requestCloseTab(tab: WorkspaceTab) {
-  if (tab.dirty) workspace.pendingAction = { kind: 'close-tab', tabId: tab.id }
+  if (tab.dirty || workspace.entryDrafts[tab.id]) workspace.pendingAction = { kind: 'close-tab', tabId: tab.id }
   else releaseTab(tab)
 }
 
@@ -115,6 +94,11 @@ async function handlePending(choice: 'save' | 'discard' | 'cancel') {
     return
   }
 
+  if (choice === 'save' && (action.kind === 'close-window' ? Object.values(workspace.entryDrafts).some(Boolean) || credentialDraft.value : workspace.entryDrafts[action.tabId])) {
+    workspace.pendingAction = null
+    if (action.kind === 'close-window') window.caretlex.respondToClose(false)
+    return
+  }
   const affected = action.kind === 'close-window'
     ? workspace.tabs.filter((tab) => tab.dirty)
     : workspace.tabs.filter((tab) => tab.id === action.tabId && tab.dirty)
@@ -127,7 +111,7 @@ async function handlePending(choice: 'save' | 'discard' | 'cancel') {
     for (const tab of affected) workspace.updateDraft(tab.id, tab.document.snapshot.text)
     if (action.kind === 'close-window' && workspace.settingsDirty) {
       if (workspace.settingsExternal) workspace.reloadExternalSettings()
-      else if (workspace.settingsSnapshot) workspace.updateSettingsDraft(JSON.stringify(workspace.settingsSnapshot.value, null, 2))
+      else if (workspace.settingsSnapshot) workspace.updateSettingsDraft(workspace.settingsSnapshot.text ?? '')
     }
   }
 
@@ -140,18 +124,6 @@ async function handlePending(choice: 'save' | 'discard' | 'cancel') {
   } else if (action.kind === 'close-window') {
     await closeAllDocuments()
   }
-}
-
-async function addVocabulary(selection: { sourceSpan: { start: number; end: number }; selected: string; sentence: string }, lemma: string, value: JsonValue, complete: (saved: boolean) => void) {
-  const tab = activeTab.value
-  if (!tab) { complete(false); return }
-  const saved = await workspace.addVocabulary(tab, { sourceSpan: selection.sourceSpan, selected: selection.selected, lemma, value })
-  complete(saved)
-}
-
-async function editVocabulary(lemma: string, value: JsonValue) {
-  if (!activeTab.value) return
-  await workspace.editVocabulary(activeTab.value.id, lemma, value)
 }
 
 async function deleteVocabulary(lemma: string) {
@@ -178,7 +150,7 @@ onMounted(async () => {
   unwatchDocuments = window.caretlex.onDocumentChanged((event) => workspace.applyExternalChange(event.document))
   unwatchSettings = window.caretlex.onSettingsChanged((snapshot) => workspace.applyExternalSettings(snapshot))
   unwatchClose = window.caretlex.onRequestClose(() => {
-    if (workspace.tabs.some((tab) => tab.dirty) || workspace.settingsDirty) workspace.pendingAction = { kind: 'close-window' }
+    if (workspace.tabs.some((tab) => tab.dirty) || workspace.settingsDirty || credentialDraft.value || Object.values(workspace.entryDrafts).some(Boolean)) workspace.pendingAction = { kind: 'close-window' }
     else void closeAllDocuments()
   })
   await workspace.openStartupDocument()
@@ -241,59 +213,43 @@ onBeforeUnmount(() => {
         :dirty="workspace.settingsDirty"
         :error="workspace.bridgeError"
         :on-save="workspace.saveSettings"
+        :on-reset="workspace.resetSettings"
         :on-choose-path="workspace.migrateSettingsPath"
         :on-reload-external="workspace.reloadExternalSettings"
         @update:draft="workspace.updateSettingsDraft"
+        @credentials-dirty="credentialDraft = $event"
         @close="workspace.settingsOpen = false"
       />
     </section>
-    <section v-if="!settingsOpen && activeTab" class="document-workspace">
-      <SourceEditor
-        v-if="activeTab.mode === 'source'"
-        :model-value="activeTab.draft"
-        :dark="effectiveDark"
-        @update:model-value="workspace.updateDraft(activeTab.id, $event)"
-        @save="saveCurrent(activeTab)"
-      />
-      <ReaderView
-        v-else
-        :key="`${activeTab.id}:${activeTab.document.snapshot.revision ?? 'draft'}`"
-        :tab="activeTab"
-        :busy="workspace.busy"
-        :dark="effectiveDark"
-        :settings="settingsForReader"
-        :settings-available="settingsAvailable"
-        :template="entryTemplate"
-        :default-bindings="defaultBindings"
-        @add="addVocabulary"
-        @edit="editVocabulary"
-        @delete="deleteVocabulary"
-      />
-      <footer v-if="activeTab.mode === 'source'" class="document-statusbar">
-        <span>{{ activeTab.document.snapshot.path || '新文档尚未保存' }}</span>
-        <span>{{ activeTab.dirty ? '有未保存修改' : '已保存' }}</span>
-      </footer>
+    <section v-for="tab in workspace.tabs" :key="tab.id" v-show="!settingsOpen && activeTab?.id === tab.id" class="document-workspace">
+      <SourceEditor v-if="tab.mode === 'source'" :model-value="tab.draft" :dark="effectiveDark" @update:model-value="workspace.updateDraft(tab.id, $event)" @save="saveCurrent(tab)" />
+      <ReaderView v-show="tab.mode === 'read'" :tab="tab" :active="!settingsOpen && activeTab?.id === tab.id && tab.mode === 'read'" :busy="workspace.busy" :dark="effectiveDark"
+        :settings="settingsForReader" :settings-available="settingsAvailable" :settings-revision="runtimeSettings?.revision ?? ''"
+        :on-save-entry="workspace.addVocabulary" :on-edit-entry="workspace.editVocabulary" :on-delete-entry="workspace.deleteVocabulary"
+        @unsaved="workspace.entryDrafts[tab.id] = $event" />
+      <footer v-if="tab.mode === 'source'" class="document-statusbar"><span>{{ tab.document.snapshot.path || '新文档尚未保存' }}</span><span>{{ tab.dirty ? '有未保存修改' : '已保存' }}</span></footer>
     </section>
-    <section v-else-if="!settingsOpen" class="welcome-screen">
+    <section v-if="!settingsOpen && !activeTab" class="welcome-screen">
       <div class="welcome-logo">[<span>^</span>w-]</div>
       <p class="eyebrow">CARETLEX</p>
       <h1>让词条留在 Markdown 里</h1>
-      <p class="welcome-copy">打开一篇英文文档，选中单词并手动保存释义。词条会写入文档，随文件一起携带。</p>
+      <p class="welcome-copy">打开一篇英文文档，选中单词并检查释义。词条会写入文档，随文件一起携带。</p>
       <div class="welcome-actions">
         <button class="button button-primary" type="button" :disabled="workspace.busy" @click="showOpen">打开 Markdown</button>
         <button class="button button-secondary" type="button" :disabled="workspace.busy" @click="showNew">新建文档</button>
       </div>
-      <p class="welcome-footnote">首版词条由你确认，不接入自动词典。</p>
+      <p class="welcome-footnote">可手动填写，或在设置中启用一个自动 provider；词条身份由你确认。</p>
     </section>
 
     <div v-if="pendingAction" class="modal-backdrop" role="presentation">
       <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="pending-title">
         <h2 id="pending-title">{{ pendingAction.kind === 'close-window' ? '关闭窗口？' : pendingAction.kind === 'close-tab' ? '关闭标签页？' : '切回阅读模式？' }}</h2>
-        <p>{{ pendingAction.kind === 'close-window' && workspace.settingsDirty ? '文档或设置中有未保存的修改。保存后继续、放弃修改，或取消关闭。' : '源码中有未保存的修改。保存后继续、放弃修改，或取消当前操作。' }}</p>
+        <p v-if="pendingEntryDraft">词条、设置或凭据有未保存草稿。返回编辑界面检查并保存，或放弃草稿继续关闭。</p>
+        <p v-else>{{ pendingAction.kind === 'close-window' && workspace.settingsDirty ? '文档或设置中有未保存的修改。保存后继续、放弃修改，或取消关闭。' : '源码中有未保存的修改。保存后继续、放弃修改，或取消当前操作。' }}</p>
         <div class="dialog-actions">
           <button class="button button-secondary" type="button" @click="handlePending('cancel')">取消</button>
           <button class="button button-danger" type="button" @click="handlePending('discard')">放弃修改</button>
-          <button class="button button-primary" type="button" @click="handlePending('save')">保存并继续</button>
+          <button class="button button-primary" type="button" @click="handlePending('save')">{{ pendingEntryDraft ? '返回编辑' : '保存并继续' }}</button>
         </div>
       </section>
     </div>

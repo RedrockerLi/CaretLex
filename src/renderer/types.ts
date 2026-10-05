@@ -12,17 +12,20 @@ export type { CaretLexBridge, DocumentResult, JsonValue, ParsedDocument, SaveRes
 export interface SelectionContext {
   sourceSpan: SourceSpan
   selected: string
-  sentence: string
+  documentId: string
+  baseRevision?: string
 }
+
+export interface WorkspaceDocument extends Omit<DocumentResult, 'parsed'> { parsed: ParsedDocument }
 
 export interface WorkspaceTab {
   id: string
-  document: DocumentResult
+  document: WorkspaceDocument
   mode: 'read' | 'source'
   draft: string
   dirty: boolean
   externalConflict: boolean
-  pendingExternal?: DocumentResult
+  pendingExternal?: WorkspaceDocument
 }
 
 export type PendingAction =

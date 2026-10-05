@@ -1,14 +1,20 @@
-import { computed, ref, shallowRef, triggerRef } from 'vue'
+import { computed, ref, shallowReactive, shallowRef, triggerRef } from 'vue'
 import { defineStore } from 'pinia'
+import { documentFromWire } from '../../shared/document-wire'
 import { parseSettings } from '../../shared/settings'
-import type { DocumentResult, JsonValue, PendingAction, SaveResult, SettingsSnapshot, WorkspaceTab } from '../types'
+import type { DocumentResult, JsonValue, PendingAction, SaveResult, SettingsSnapshot, WorkspaceDocument, WorkspaceTab } from '../types'
 
-function cloneJson<T extends JsonValue>(value: T): T {
+function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-function makeTab(document: DocumentResult): WorkspaceTab {
-  return {
+function decodeDocument(result: DocumentResult): WorkspaceDocument {
+  return documentFromWire(result)
+}
+
+function makeTab(result: DocumentResult): WorkspaceTab {
+  const document = decodeDocument(result)
+  return shallowReactive<WorkspaceTab>({
     id: document.snapshot.id,
     document,
     mode: 'read',
@@ -16,7 +22,7 @@ function makeTab(document: DocumentResult): WorkspaceTab {
     dirty: false,
     externalConflict: false,
     pendingExternal: undefined,
-  }
+  })
 }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
@@ -30,9 +36,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const pendingAction = ref<PendingAction | null>(null)
   const bridgeError = ref('')
   const busy = ref(false)
+  const entryDrafts = ref<Record<string, boolean>>({})
 
   const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeTabId.value) ?? null)
-  const theme = computed(() => settingsSnapshot.value?.value.theme ?? 'system')
+  const theme = computed(() => (settingsExternal.value ?? settingsSnapshot.value)?.value?.theme ?? 'system')
 
   function applyDocument(result: DocumentResult) {
     const existing = tabs.value.find((tab) => tab.id === result.snapshot.id)
@@ -41,13 +48,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (existing.dirty) {
         if (result.snapshot.revision !== previousRevision) {
           existing.externalConflict = true
-          existing.pendingExternal = result
+          existing.pendingExternal = decodeDocument(result)
         }
         triggerRef(tabs)
         activeTabId.value = existing.id
         return existing
       }
-      existing.document = result
+      existing.document = decodeDocument(result)
       existing.draft = result.snapshot.text
       existing.externalConflict = false
       existing.pendingExternal = undefined
@@ -63,7 +70,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function applySave(tab: WorkspaceTab, result: SaveResult) {
-    tab.document = result
+    tab.document = decodeDocument(result)
     tab.draft = result.snapshot.text
     tab.dirty = false
     tab.externalConflict = false
@@ -141,7 +148,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function applyExternalChange(document: DocumentResult) {
+  function applyExternalChange(result: DocumentResult) {
+    const document = decodeDocument(result)
     const tab = tabs.value.find((item) => item.id === document.snapshot.id)
     if (!tab) return
     if (tab.dirty) {
@@ -172,6 +180,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const index = tabs.value.findIndex((tab) => tab.id === tabId)
     if (index < 0) return
     tabs.value.splice(index, 1)
+    delete entryDrafts.value[tabId]
     triggerRef(tabs)
     if (activeTabId.value === tabId) activeTabId.value = tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null
   }
@@ -193,7 +202,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return
       }
       settingsSnapshot.value = snapshot
-      settingsDraft.value = JSON.stringify(snapshot.value, null, 2)
+      settingsDraft.value = snapshot.text ?? ''
       settingsDirty.value = false
       settingsExternal.value = null
     } catch (error) {
@@ -204,7 +213,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function updateSettingsDraft(value: string) {
     settingsDraft.value = value
     settingsDirty.value = settingsSnapshot.value
-      ? value !== JSON.stringify(settingsSnapshot.value.value, null, 2)
+      ? value !== (settingsSnapshot.value.text ?? '')
       : value.length > 0
   }
 
@@ -218,7 +227,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       settingsSnapshot.value = snapshot
       if (snapshot.error) return false
-      settingsDraft.value = JSON.stringify(snapshot.value, null, 2)
+      settingsDraft.value = snapshot.text ?? ''
       settingsDirty.value = false
       settingsExternal.value = null
       return true
@@ -245,26 +254,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function applyExternalSettings(snapshot: SettingsSnapshot) {
-    if (snapshot.error) {
-      settingsExternal.value = snapshot
-      bridgeError.value = snapshot.error
-      return
-    }
     if (settingsDirty.value) {
       settingsExternal.value = snapshot
       return
     }
     settingsSnapshot.value = snapshot
-    settingsDraft.value = JSON.stringify(snapshot.value, null, 2)
+    settingsDraft.value = snapshot.text ?? ''
     settingsDirty.value = false
     settingsExternal.value = null
   }
 
+  async function resetSettings() {
+    const token = (settingsExternal.value ?? settingsSnapshot.value)?.resetToken
+    if (!token) { bridgeError.value = '当前设置文件无法安全写入，请检查文件权限或重新选择位置。'; return false }
+    bridgeError.value = ''
+    try {
+      const snapshot = await window.caretlex.resetSettings(token)
+      settingsSnapshot.value = snapshot; settingsExternal.value = null
+      settingsDraft.value = snapshot.text ?? ''; settingsDirty.value = false
+      return !snapshot.error
+    } catch (error) {
+      bridgeError.value = error instanceof Error ? error.message : '恢复默认设置失败。'
+      settingsExternal.value = await window.caretlex.loadSettings().catch(() => null)
+      return false
+    }
+  }
+
   function reloadExternalSettings() {
     const snapshot = settingsExternal.value
-    if (!snapshot || snapshot.error) return false
+    if (!snapshot) return false
     settingsSnapshot.value = snapshot
-    settingsDraft.value = JSON.stringify(snapshot.value, null, 2)
+    settingsDraft.value = snapshot.text ?? ''
     settingsDirty.value = false
     settingsExternal.value = null
     return true
@@ -280,7 +300,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const result = await window.caretlex.chooseSettingsPath()
       if (result) {
         settingsSnapshot.value = result
-        settingsDraft.value = JSON.stringify(result.value, null, 2)
+        settingsDraft.value = result.text ?? ''
         settingsExternal.value = null
       }
     } catch (error) {
@@ -298,63 +318,40 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function addVocabulary(tab: WorkspaceTab, selection: { sourceSpan: { start: number; end: number }; selected: string; lemma: string; value: JsonValue }) {
-    bridgeError.value = ''
-    busy.value = true
+  async function addVocabulary(location: import('../../shared/bridge').EntryLocation, lemma: string, value: JsonValue) {
+    const tab = tabs.value.find(item => item.id === location.documentId)
+    if (!tab) throw new Error('文档会话已关闭，草稿未保存。')
+    bridgeError.value = ''; busy.value = true
     try {
-      if (!tab.document.snapshot.path) {
-        const saved = await window.caretlex.saveAs({
-          documentId: tab.id,
-          baseRevision: tab.document.snapshot.revision,
-          text: tab.document.snapshot.text,
-        })
-        if (!saved) return false
-        tab.document = saved
-        tab.draft = saved.snapshot.text
-        triggerRef(tabs)
-      }
-      const result = await window.caretlex.addVocabulary({
-        documentId: tab.id,
-        baseRevision: tab.document.snapshot.revision,
-        sourceSpan: { start: selection.sourceSpan.start, end: selection.sourceSpan.end },
-        selected: selection.selected,
-        lemma: selection.lemma,
-        value: cloneJson(selection.value),
-      })
+      const result = await window.caretlex.addVocabulary(cloneJson({ ...location, lemma, value }))
       applySave(tab, result)
-      return true
+      return result
     } catch (error) {
       bridgeError.value = error instanceof Error ? error.message : '保存词条失败。'
-      return false
-    } finally {
-      busy.value = false
-    }
+      throw error
+    } finally { busy.value = false }
   }
-
-  async function editVocabulary(tabId: string, lemma: string, value: JsonValue) {
-    const tab = tabs.value.find((item) => item.id === tabId)
-    if (!tab) return false
-    bridgeError.value = ''
-    busy.value = true
+  async function editVocabulary(documentId: string, baseRevision: string | undefined, lemma: string, value: JsonValue) {
+    const tab = tabs.value.find(item => item.id === documentId)
+    if (!tab) throw new Error('文档会话已关闭，草稿未保存。')
+    bridgeError.value = ''; busy.value = true
     try {
-      const result = await window.caretlex.editVocabulary({ documentId: tab.id, baseRevision: tab.document.snapshot.revision, lemma, value: cloneJson(value) })
+      const result = await window.caretlex.editVocabulary({ documentId, baseRevision, lemma, value: cloneJson(value) })
       applySave(tab, result)
-      return true
+      return result
     } catch (error) {
       bridgeError.value = error instanceof Error ? error.message : '编辑词条失败。'
-      return false
-    } finally {
-      busy.value = false
-    }
+      throw error
+    } finally { busy.value = false }
   }
 
-  async function deleteVocabulary(tabId: string, lemma: string) {
+  async function deleteVocabulary(tabId: string, lemma: string, baseRevision?: string) {
     const tab = tabs.value.find((item) => item.id === tabId)
     if (!tab) return false
     bridgeError.value = ''
     busy.value = true
     try {
-      const result = await window.caretlex.deleteVocabulary({ documentId: tab.id, baseRevision: tab.document.snapshot.revision, lemma })
+      const result = await window.caretlex.deleteVocabulary({ documentId: tab.id, baseRevision: baseRevision ?? tab.document.snapshot.revision, lemma })
       applySave(tab, result)
       return true
     } catch (error) {
@@ -367,6 +364,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   return {
     tabs,
+    entryDrafts,
     activeTabId,
     activeTab,
     theme,
@@ -392,6 +390,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     updateSettingsDraft,
     saveSettings,
     saveSettingsDraft,
+    resetSettings,
     applyExternalSettings,
     reloadExternalSettings,
     migrateSettingsPath,

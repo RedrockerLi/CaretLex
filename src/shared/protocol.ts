@@ -179,7 +179,7 @@ function makeTextRun(text: string, node: MdNode, ancestors: string[], span: Sour
         index += piece.length
       }
     } else if (current === '\r' && raw[index + 1] === '\n') {
-      piece = '\n'
+      piece = '\r\n'
       sourceEnd = sourceStart + 2
       index += 2
     } else {
@@ -679,7 +679,17 @@ export function getAdjacentVocabularyReference(
   parsed: ParsedDocument,
   sourceSpan: SourceSpan
 ): FootnoteReferenceRecord | undefined {
-  return parsed.footnoteReferences.find((reference) => reference.span.start === sourceSpan.end && /^w-/i.test(reference.label ?? ''))
+  const source = parsed.text.startsWith('\uFEFF') ? parsed.text.slice(1) : parsed.text
+  let cursor = sourceSpan.end
+  while (cursor <= source.length) {
+    const closing = /^(?:\*{1,3}|_{1,3}|~~)+/.exec(source.slice(cursor))
+    if (closing) cursor += closing[0].length
+    const reference = parsed.footnoteReferences.find(item => item.span.start === cursor)
+    if (!reference) return undefined
+    if (/^w-/i.test(reference.label ?? '')) return reference
+    cursor = reference.span.end // ordinary notes remain visible and do not hide a vocabulary reference
+  }
+  return undefined
 }
 
 export function getLineEnding(text: string): '\n' | '\r\n' | '\r' {
