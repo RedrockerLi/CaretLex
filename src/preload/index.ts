@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { isJsonValue } from '../shared/json'
 import type { CaretLexBridge } from '../shared/bridge'
+import { menuCommands, type MenuCommand } from '../shared/menu'
 
 const documentHandlers = new Set<Parameters<CaretLexBridge['onDocumentChanged']>[0]>()
 const pendingDocuments: Parameters<CaretLexBridge['onDocumentChanged']>[0] extends (arg: infer T) => void ? T[] : never[] = []
@@ -21,6 +22,15 @@ ipcRenderer.on('document:changed', (_event, payload) => {
 })
 
 const bridge: CaretLexBridge = {
+  onMenuCommand(callback) {
+    const listener = (_event: Electron.IpcRendererEvent, command: unknown) => {
+      if (menuCommands.includes(command as MenuCommand)) callback(command as MenuCommand)
+    }
+    ipcRenderer.on('menu:command', listener)
+    return () => ipcRenderer.removeListener('menu:command', listener)
+  },
+  updateMenuState: state => ipcRenderer.send('menu:state', state),
+  editHistory: command => ipcRenderer.invoke('edit:history', command),
   providerTypes: () => ipcRenderer.invoke('provider:types'),
   providerPreset: input => ipcRenderer.invoke('provider:preset', { ...input, config: copyJson(input.config) }),
   getArticle: input => ipcRenderer.invoke('article:get', input),
@@ -28,6 +38,7 @@ const bridge: CaretLexBridge = {
   cancelProvider: id => ipcRenderer.invoke('provider:cancel', id),
   saveCredential: key => ipcRenderer.invoke('credential:save', key),
   credentialStatus: ref => ipcRenderer.invoke('credential:status', ref),
+  removeCredential: ref => ipcRenderer.invoke('credential:remove', ref),
   takeStartupDocument: () => ipcRenderer.invoke('document:startup'),
   openMarkdown: () => ipcRenderer.invoke('document:open'),
   newDocument: () => ipcRenderer.invoke('document:new'),

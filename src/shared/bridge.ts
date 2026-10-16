@@ -2,6 +2,7 @@ import type { DocumentSnapshot, JsonValue, ParsedDocument, SourceSpan, VocabReco
 import type { AppSettings } from './settings'
 import type { ArticleData, ProviderIssue } from './providers'
 import type { CoreResult } from './types'
+import type { MenuCommand, MenuState } from './menu'
 
 export interface DocumentResult {
   error?: string
@@ -43,13 +44,17 @@ export interface SourceResult {
 }
 export interface ProviderDescription { type: string; defaultConfig: JsonValue; hasPreset: boolean }
 export interface CaretLexBridge {
+  onMenuCommand(callback: (command: MenuCommand) => void): () => void
+  updateMenuState(state: MenuState): void
+  editHistory(command: 'undo' | 'redo'): Promise<void>
   providerTypes(): Promise<ProviderDescription[]>
   providerPreset(input: { type: string; name: string; config: JsonValue }): Promise<{ template: JsonValue | null; reason?: string }>
   getArticle(input: EntryLocation): Promise<CoreResult<ArticleData>>
   fetchSources(input: ProviderFetchInput): Promise<SourceResult>
   cancelProvider(requestId: string): Promise<void>
   saveCredential(key: string): Promise<string>
-  credentialStatus(ref?: string): Promise<{ exists: boolean; error?: string }>
+  credentialStatus(ref?: string): Promise<{ exists: boolean; masked?: string; error?: string }>
+  removeCredential(ref: string): Promise<void>
   takeStartupDocument(): Promise<DocumentResult | null>
   openMarkdown(): Promise<DocumentResult | null>
   newDocument(): Promise<DocumentResult>

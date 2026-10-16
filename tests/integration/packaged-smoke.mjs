@@ -12,6 +12,7 @@ const binary = resolve(process.argv[2] ?? '')
 if (!process.argv[2]) throw new Error('Usage: node tests/integration/packaged-smoke.mjs <linux-unpacked-binary-or-appimage> [source-app-directory]')
 
 const root = await mkdtemp(join(tmpdir(), 'caretlex-packaged-smoke-'))
+const dataHome = join(root, 'data')
 const filePath = join(root, 'reader.md')
 const original = '# Reading\n\nShe went home. She went again.\n\nThe bank is beside the river bank.\n\nThe bank is beside the river bank.\n\nHe walked away. He returned home.\n'
 await writeFile(filePath, original, 'utf8')
@@ -46,6 +47,7 @@ const environment = {
   ...process.env,
   XDG_CONFIG_HOME: join(root, 'config'),
   XDG_CACHE_HOME: join(root, 'cache'),
+  XDG_DATA_HOME: dataHome,
   ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
   GDK_BACKEND: 'x11',
   GTK_USE_PORTAL: '0',
@@ -62,7 +64,7 @@ const api = createHttpServer(async (request, response) => {
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
   requests.push({ path: request.url, authorization: request.headers.authorization, headers: request.headers, body })
   const protocol = request.url.endsWith('/responses') ? 'openai-responses' : request.url.endsWith('/messages') ? 'anthropic-messages' : request.url.includes(':generateContent') ? 'gemini' : 'openai-chat'
-  const prompt = protocol === 'openai-responses' ? body.input : protocol === 'anthropic-messages' ? body.messages[0].content : protocol === 'gemini' ? body.contents[0].parts[0].text : body.messages[1].content
+  const prompt = protocol === 'openai-responses' ? body.input : protocol === 'anthropic-messages' ? body.messages[0].content : protocol === 'gemini' ? body.contents[0].parts[0].text : body.messages[0].content
   const word = /Word: ([^\n]+)/.exec(prompt)?.[1]
   const lemma = word === 'went' ? 'go' : word === 'walked' ? 'walk' : word === 'returned' ? 'return' : 'bank'
   const meaning = prompt.includes('river [bank]') ? '（名词）河岸' : lemma === 'bank' ? '（名词）银行' : '（动词）去'
@@ -195,7 +197,7 @@ async function clickText(selector, label) { await evaluate(`[...document.querySe
 async function openComposer(occurrence, word = 'went') {
   await selectVisibleWord(occurrence, word)
   await evaluate("document.querySelector('.selection-toolbar button').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))")
-  await waitUi("!!document.querySelector('.entry-composer .article-sentence')", 'the article marker in the entry composer')
+  await waitUi(`(document.querySelector('#entry-json')?.value ?? '').includes('[${word}]')`, 'the article marker in the entry composer')
 }
 async function editJson(selector, edit) {
   const text = await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`)
@@ -208,7 +210,7 @@ async function submitComposer() {
 async function addManual(occurrence, meaning, word = 'went', lemma = 'go') {
   await openComposer(occurrence, word)
   if (!(await evaluate("document.querySelector('#lemma-input').disabled"))) await setField('#lemma-input', lemma)
-  const sentence = await evaluate("document.querySelector('.article-sentence').textContent")
+  const sentence = await evaluate("JSON.parse(document.querySelector('.entry-composer .value-preview pre').textContent).sources.article.original_sentence")
   if (meaning) await editJson('#entry-json', value => {
     value.lemma = lemma
     const context = value.contexts.find(item => item.original_sentence === sentence)
@@ -265,6 +267,13 @@ async function stopApp() {
 try {
   startApp(); await connect()
   await waitUi("document.readyState === 'complete' && !!document.querySelector('.reader-scroll')", 'rendered Markdown')
+  const desktopEntry = join(dataHome, 'applications', 'CaretLex.desktop')
+  let desktopText = ''
+  for (let attempt = 0; attempt < 200 && !desktopText; attempt++) { desktopText = await readFile(desktopEntry, 'utf8').catch(() => ''); if (!desktopText) await delay(25) }
+  assert.match(desktopText, /StartupWMClass=CaretLex/, 'the packaged app installs its user desktop entry')
+  assert.match(desktopText, /Icon=caretlex/)
+  assert.match(desktopText, /NoDisplay=true/)
+  assert.ok((await stat(join(dataHome, 'icons', 'hicolor', '512x512', 'apps', 'caretlex.png'))).size > 0, 'the desktop entry icon asset')
   const brokenSettings = await evaluate('window.caretlex.loadSettings()')
   assert.equal(brokenSettings.value, undefined); assert.ok(brokenSettings.error)
   await clickText('.toolbar-button', '设置')
@@ -346,6 +355,18 @@ try {
   await setField('[data-field=name]', '__proto__', 'change')
   await clickText('.settings-page button', '保存设置')
   await waitUi("!document.querySelector('.settings-dirty-label')", 'saved settings')
+  await waitUi("!!document.querySelector('.key-row .key-mask')", 'the stored key row')
+  assert.equal(await evaluate("document.querySelector('.key-row .key-name').textContent"), '__proto__')
+  assert.equal(await evaluate("document.querySelector('.key-row .key-mask').textContent"), 'smoke…-key', 'the stored key is shown masked')
+  const removedRef = (await evaluate('window.caretlex.loadSettings()')).value.providers[0].config.apiKeyRef
+  await evaluate("document.querySelector('.key-row .text-button').click()")
+  await waitUi("!document.querySelector('.key-row')", 'deleting the stored key')
+  assert.equal((await evaluate(`window.caretlex.credentialStatus(${JSON.stringify(removedRef)})`)).exists, false, 'deleting removes the local key')
+  assert.equal(await evaluate("!!document.querySelector('.settings-dirty-label')"), true, 'deleting a key marks the draft unsaved')
+  await setField('[data-field=key]', 'smoke-test-key')
+  await clickText('.settings-page button', '保存设置')
+  await waitUi("!document.querySelector('.settings-dirty-label')", 'saving a replacement key')
+  await waitUi("!!document.querySelector('.key-row .key-mask')", 'the replacement key row')
   await evaluate("document.querySelector('.settings-overlay').scrollTop = 0")
   assert.equal(await evaluate("document.querySelectorAll('.settings-details, [aria-label=\"保存模板\"], [aria-label=\"设置 JSON\"]').length"), 0)
   assert.equal(await evaluate("document.querySelector('[data-field=type]').value"), 'LLM')
@@ -377,7 +398,11 @@ try {
   await openComposer(0, 'bank'); await waitCount(1)
   assert.equal(requests[0].path, '/custom/v1/chat/completions')
   assert.equal(requests[0].authorization, 'Bearer smoke-test-key')
-  assert.ok(requests[0].body.messages[1].content.includes('The [bank] is beside the river bank.'))
+  assert.equal(requests[0].body.messages.length, 1, 'only the substituted prompt is sent')
+  assert.equal(requests[0].body.messages[0].role, 'user')
+  assert.equal(requests[0].body.system, undefined)
+  assert.ok(requests[0].body.messages[0].content.includes('Return only valid JSON'))
+  assert.ok(requests[0].body.messages[0].content.includes('The [bank] is beside the river bank.'))
   await editJson('#entry-json', value => { value.hand = 'protected draft' })
   const handDraft = await evaluate("document.querySelector('#entry-json').value")
   delayed.splice(0).forEach(reply => reply())

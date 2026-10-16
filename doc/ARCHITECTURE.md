@@ -8,13 +8,15 @@ CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/G
 
 | 模块 | 当前职责 |
 |---|---|
-| `src/main/index.ts` | IPC 参数/发送者复核、窗口、原生对话框、保存回执、导出、图片与外链 |
+| `src/main/index.ts` | IPC 参数/发送者复核、窗口与图标、原生对话框、保存回执、导出、图片与外链、启动时安装桌面条目 |
+| `src/main/menu.ts` / `src/shared/menu.ts` | 中文原生菜单、命令与状态协议、快捷键、可用性和阅读模式标记 |
 | `src/main/repositories.ts` | 文档身份、真实路径去重、严格 UTF-8、revision、监听、串行原子写入、配置恢复和路径选择 |
 | `src/main/article.ts` | 从选区定位文本块、可见位置映射、硬换行分段、sbd 与分句适配、marker |
 | `src/main/llm.ts` | 可注入 fetch/getKey 的真实 LLM HTTP 适配器、超时、取消、大小/格式检查 |
 | `src/main/llm-protocols.ts` | 四种 API 的请求封装、认证头、严格响应文本解析；协议选择不影响通用映射 |
 | `src/main/providers.ts` | requestId 登记、唯一实例选择、来源命名空间、类型描述与预设、版本复核 |
-| `src/main/credentials.ts` | 本机稳定凭据引用、串行 0600 原子写入、损坏文件保护、存在性查询 |
+| `src/main/credentials.ts` | 本机稳定凭据引用、串行 0600 原子写入、损坏文件保护、存在性与掩码查询、按引用删除 |
+| `src/main/desktop-integration.ts` | Linux 用户级 `.desktop` 与 hicolor 图标（NoDisplay，供任务栏按 app_id 匹配） |
 | `src/shared/providers.ts` | 统一类型/适配器接口、LLM 默认配置与预设、响应示例检查 |
 | `src/shared/settings.ts` | 设置配置与单实例校验、明确引用重命名 |
 | `src/shared/mapping.ts` | 纯来源路径求值、数组层级与列表展开、字面量、字段诊断 |
@@ -39,7 +41,7 @@ CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/G
   → 原子文件写入与真实回执
 ```
 
-普通自动 provider 只接收 article、自己的 JSON config 与 AbortSignal。凭据值由主进程 LLM 适配器通过引用取得，不进入 renderer、prompt 或来源结果。生产使用真实 fetch；测试注入本机模拟 HTTP 服务。
+普通自动 provider 只接收 article、自己的 JSON config 与 AbortSignal。凭据值由主进程 LLM 适配器通过引用取得，不进入 renderer、prompt 或来源结果；设置界面只显示主进程计算的掩码。请求体是设置页 Prompt 的变量替换结果，主进程不附加隐藏 system 文本。生产使用真实 fetch；测试注入本机模拟 HTTP 服务。
 
 新增类型实现 `ProviderAdapter`，注册到类型描述/配置注册表和主进程适配器表，提供默认配置与保存预设；通用获取、映射、合并、完整编辑和文件协议沿用同一流程。没有可靠上下文义时明确提示，不以首条词典释义代替。
 
@@ -65,7 +67,7 @@ Markdown 上限 16 MiB；设置、词条、AI 请求和响应上限 1 MiB。JSON
 
 ## 验证
 
-Vitest 覆盖协议和边界映射、声明的 article 样例、设置及 API 类型校验、数组映射、JSON 子树与字面量、contexts 合并、身份锁定、异步手改保护、配置恢复、损坏/无法解码/超限设置的显式恢复、冲突保护、凭据权限与迁移隔离。
+Vitest 覆盖协议和边界映射、声明的 article 样例、设置及 API 类型校验（含旧默认 Prompt 升级）、数组映射、JSON 子树与字面量、contexts 合并、身份锁定、异步手改保护、配置恢复、损坏/无法解码/超限设置的显式恢复、冲突保护、凭据权限、掩码与按引用删除、迁移隔离，以及桌面条目的内容与幂等写入。
 
 `tests/main/providers.test.ts` 使用本机 HTTP 服务验证实际请求路径、认证、prompt、JSON mode、外层/内容错误、HTTP 状态、取消、超时与实际字节上限。这是协议实现验证，不是某个线上模型服务的联调验证。
 

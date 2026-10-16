@@ -35,6 +35,15 @@ Use “（词性）中文翻译” for meaning_in_context and other_meanings[].m
 Use English for english_definition and example_sentence. Give other meanings as appropriate; an empty list is allowed.
 Word: {{article.original_word}}
 Sentence: {{article.original_sentence}}
+Return only valid JSON matching the following response example. No Markdown fences or explanations. Array lengths may vary.
+Response JSON example:
+{{JSON}}`
+/** 发布过的默认 Prompt；升级时整串匹配替换，用户改过的内容不动。 */
+export const legacyDefaultPrompt = `Explain only the marked occurrence in the sentence. Provide its dictionary lemma.
+Use “（词性）中文翻译” for meaning_in_context and other_meanings[].meaning.
+Use English for english_definition and example_sentence. Give other meanings as appropriate; an empty list is allowed.
+Word: {{article.original_word}}
+Sentence: {{article.original_sentence}}
 Response JSON example:
 {{JSON}}`
 export function llmPreset(name: string): JsonValue {
@@ -104,7 +113,9 @@ export const llmType: ProviderType = {
     if (!Object.hasOwn(config, 'responseTemplate')) return fail('必须提供响应 JSON 示例。')
     const checked = validateExample(config.responseTemplate)
     if (!checked.ok) return checked
-    return { ok: true, value: config }
+    // 旧默认 Prompt 整串升级：过去随请求发送的 JSON 指令已并入默认 Prompt 正文。
+    const value = config.prompt === legacyDefaultPrompt ? { ...config, prompt: defaultPrompt } : config
+    return { ok: true, value }
   }
 }
 export const providerTypes = new Map<string, ProviderType>([['LLM', llmType]])

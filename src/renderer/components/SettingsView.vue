@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import type { SettingsSnapshot, ProviderDescription } from '../../shared/bridge'
 import { parseSettings, renameProfile, type AppSettings } from '../../shared/settings'
-import { isDefaultSaveStructure, llmApiTypes } from '../../shared/providers'
+import { defaultPrompt, isDefaultSaveStructure, llmApiTypes } from '../../shared/providers'
 import type { JsonValue } from '../../shared/types'
 
 const props = defineProps<{
@@ -18,6 +18,7 @@ const saving = ref(false)
 const descriptions = shallowRef<ProviderDescription[]>([])
 const keys = shallowRef<Record<string, string>>(Object.create(null))
 const credentialStates = shallowRef<Record<string, string>>(Object.create(null))
+const credentialMasks = shallowRef<Record<string, string>>(Object.create(null))
 const buffers = ref<Record<string, string>>({})
 const bufferErrors = ref<Record<string, string>>({})
 const expandedProviders = ref<number[]>([])
@@ -43,6 +44,7 @@ const form = computed<AppSettings | undefined>(() => {
 function keyValue(name: string) { return Object.hasOwn(keys.value, name) ? keys.value[name] : '' }
 function setKey(name: string, value: string) { keys.value = { ...keys.value, [name]: value } }
 function credentialState(name: string) { return Object.hasOwn(credentialStates.value, name) ? credentialStates.value[name] : '正在检查本机凭据…' }
+function maskValue(name: string) { return Object.hasOwn(credentialMasks.value, name) ? credentialMasks.value[name] : '' }
 function apiInfo(value: JsonValue | undefined) { return llmApiTypes.find(item => item.value === value) }
 function editorValue(id: string, value: unknown) { return Object.hasOwn(buffers.value, id) ? buffers.value[id] : JSON.stringify(value, null, 2) ?? '' }
 function update(operation: (settings: AppSettings) => void) {
@@ -124,8 +126,23 @@ function remove(index: number) {
 async function credential(ref: string | undefined, name: string) {
   try {
     const status = await window.caretlex.credentialStatus(ref)
+    credentialMasks.value = { ...credentialMasks.value, [name]: status.masked ?? '' }
     credentialStates.value = { ...credentialStates.value, [name]: status.error ?? (status.exists ? '本机凭据可用' : ref ? '本机凭据缺失' : '无凭据引用，使用匿名请求') }
   } catch { credentialStates.value = { ...credentialStates.value, [name]: '无法查询本机凭据' } }
+}
+async function removeKey(index: number) {
+  const profile = form.value?.providers[index]
+  const config = profile?.config
+  const ref = config && typeof config === 'object' && !Array.isArray(config) ? config.apiKeyRef : undefined
+  if (!profile || typeof ref !== 'string') return
+  saving.value = true; localError.value = ''
+  try {
+    await window.caretlex.removeCredential(ref)
+    credentialMasks.value = { ...credentialMasks.value, [profile.name]: '' }
+    update(settings => { delete (settings.providers[index].config as Record<string, JsonValue>).apiKeyRef })
+    notice.value = '本机 Key 已删除并从草稿移除引用；保存设置后生效。'
+  } catch (error) { localError.value = error instanceof Error ? error.message : '本机 Key 删除失败。' }
+  finally { saving.value = false }
 }
 watch(() => form.value?.providers.map(profile => ({ name: profile.name, ref: profile.config && typeof profile.config === 'object' && !Array.isArray(profile.config) ? profile.config.apiKeyRef : undefined })), profiles => {
   for (const profile of profiles ?? []) void credential(typeof profile.ref === 'string' ? profile.ref : undefined, profile.name)
@@ -135,7 +152,7 @@ async function restoreDefaults() {
   saving.value = true; localError.value = ''; notice.value = ''
   try {
     if (await props.onReset()) {
-      keys.value = Object.create(null); buffers.value = {}; bufferErrors.value = {}
+      keys.value = Object.create(null); credentialMasks.value = Object.create(null); buffers.value = {}; bufferErrors.value = {}
       notice.value = '已恢复并保存默认设置。'
     } else localError.value = props.error || '默认设置未恢复。'
   } catch (error) { localError.value = error instanceof Error ? error.message : String(error) }
@@ -201,9 +218,9 @@ async function save() {
               <label><span class="field-label">API 类型</span><select data-field="apiType" :value="profile.config.apiType" @change="changeApi(index, ($event.target as HTMLSelectElement).value)"><option v-for="api in llmApiTypes" :key="api.value" :value="api.value">{{ api.label }}</option></select></label>
               <label><span class="field-label">模型</span><input data-field="model" :value="profile.config.model" placeholder="服务提供的模型名称" @input="configField(index, 'model', ($event.target as HTMLInputElement).value)" /></label>
               <label class="field-wide"><span class="field-label">Base URL</span><input data-field="baseUrl" :value="profile.config.baseUrl" :placeholder="apiInfo(profile.config.apiType)?.placeholder" @input="configField(index, 'baseUrl', ($event.target as HTMLInputElement).value)" /><span class="field-hint">保留基础路径，追加 {{ apiInfo(profile.config.apiType)?.endpoint ?? '所选 API 的端点' }}。请自行填写 /v1 等版本路径。</span></label>
-              <div class="field-wide"><label><span class="field-label">API Key</span><input data-field="key" :value="keyValue(profile.name)" type="password" autocomplete="new-password" placeholder="留空保留凭据引用；无引用可匿名请求" @input="setKey(profile.name, ($event.target as HTMLInputElement).value)" /></label><p class="field-hint">{{ credentialState(profile.name) }}。Key 存在本机独立明文文件中，权限为 0600。</p><button v-if="profile.config.apiKeyRef" class="text-button" @click="update(settings => { delete (settings.providers[index].config as Record<string, JsonValue>).apiKeyRef })">移除草稿凭据引用</button></div>
+              <div class="field-wide"><div v-if="profile.config.apiKeyRef" class="key-row"><span class="key-name">{{ profile.name }}</span><code v-if="maskValue(profile.name)" class="key-mask">{{ maskValue(profile.name) }}</code><span v-else class="key-missing">本机凭据缺失</span><button type="button" class="text-button danger-link" :disabled="saving" @click="removeKey(index)">删除</button></div><label><span class="field-label">API Key</span><input data-field="key" :value="keyValue(profile.name)" type="password" autocomplete="new-password" placeholder="输入新 Key 以替换；留空保留现有引用" @input="setKey(profile.name, ($event.target as HTMLInputElement).value)" /></label><p class="field-hint">{{ credentialState(profile.name) }}。Key 存在本机独立明文文件中，权限为 0600。</p></div>
               <div class="settings-editors field-wide">
-                <label><span class="field-label">Prompt</span><textarea data-field="prompt" :value="String(profile.config.prompt ?? '')" class="prompt-editor" spellcheck="false" @input="configField(index, 'prompt', ($event.target as HTMLTextAreaElement).value)"></textarea><span class="field-hint" v-pre>变量：{{article.original_word}}、{{article.original_sentence}}、{{JSON}}（响应 JSON 示例）</span></label>
+                <label><span class="field-label">Prompt <button type="button" class="text-button" :disabled="saving" @click="configField(index, 'prompt', defaultPrompt)">恢复默认 Prompt</button></span><textarea data-field="prompt" :value="String(profile.config.prompt ?? '')" class="prompt-editor" spellcheck="false" @input="configField(index, 'prompt', ($event.target as HTMLTextAreaElement).value)"></textarea><span class="field-hint" v-pre>变量：{{article.original_word}}、{{article.original_sentence}}、{{JSON}}（响应 JSON 示例）；请求内容就是本模板替换变量后的结果，应用不追加任何隐藏内容。</span></label>
                 <label><span class="field-label">响应 JSON 示例</span><textarea data-field="responseTemplate" :value="editorValue(`${index}:responseTemplate`, profile.config.responseTemplate)" class="json-editor response-editor" spellcheck="false" @input="jsonField(index, 'responseTemplate', ($event.target as HTMLTextAreaElement).value)"></textarea><span v-if="bufferErrors[`${index}:responseTemplate`]" class="error-text">{{ bufferErrors[`${index}:responseTemplate`] }}</span><span class="field-hint">声明字段与类型；数组实际长度可以变化。</span></label>
               </div>
               <div class="settings-request-options field-wide">

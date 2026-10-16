@@ -27,7 +27,7 @@ const outer = (content: unknown = JSON.stringify({ ...defaultResponse as object,
 const adapter = (getKey = async () => 'test-key') => createLlmAdapter({ fetch: globalThis.fetch, getKey })
 
 describe('real HTTP Chat Completions protocol with a local simulated server', () => {
-  it('preserves base paths and validates prompt, marker, model, auth and JSON mode without recursive variables', async () => {
+  it('preserves base paths and validates prompt, marker, model, auth and JSON mode without recursive variables or hidden instructions', async () => {
     let requestCount = 0
     const responseTemplate = { ...defaultResponse as object, lemma: '{{article.original_word}} / {{JSON}} $&' }
     const base = await server(async (request, response) => {
@@ -38,7 +38,8 @@ describe('real HTTP Chat Completions protocol with a local simulated server', ()
       expect(request.method).toBe('POST'); expect(request.headers.authorization).toBe('Bearer test-key')
       expect(body.model).toBe('configured-model'); expect(body.stream).toBe(false)
       expect(body.response_format).toEqual({ type: 'json_object' })
-      expect(body.messages[1].content).toBe('went | She [went] {{article.original_word}} home. | ' + JSON.stringify(responseTemplate, null, 2) + ' | ' + JSON.stringify(responseTemplate, null, 2))
+      expect(body.messages).toHaveLength(1)
+      expect(body.messages[0].content).toBe('went | She [went] {{article.original_word}} home. | ' + JSON.stringify(responseTemplate, null, 2) + ' | ' + JSON.stringify(responseTemplate, null, 2))
       expect(JSON.stringify(body)).not.toContain('test-key')
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(outer()))
     })
@@ -130,9 +131,31 @@ describe('local credentials and settings recovery', () => {
     await expect(settings.save({ ...defaultSettings, providers: [{ name: 'ai_main', type: 'LLM', enabled: true, config: config('http://localhost', { apiKeyRef: newRef }) }] }, initial.revision)).rejects.toMatchObject({ code: 'CONFLICT' })
     const migrated = await settings.migrateTo(join(sync, 'settings.json'))
     const text = await readFile(migrated.path, 'utf8'); expect(text).toContain(oldRef); expect(text).not.toContain(newRef); expect(text).not.toContain('test-key')
-    expect(await credentials.status(oldRef)).toEqual({ exists: true }); expect(await credentials.status('key-11111111-1111-1111-1111-111111111111')).toMatchObject({ exists: false, error: expect.any(String) })
+    expect(await credentials.status(oldRef)).toEqual({ exists: true, masked: 'old-t…-key' }); expect(await credentials.status('key-11111111-1111-1111-1111-111111111111')).toMatchObject({ exists: false, error: expect.any(String) })
     await expect(settings.migrateTo(credentials.path)).rejects.toMatchObject({ code: 'SETTINGS_PATH_RESERVED' })
     await expect(settings.selectExistingPath(credentials.path)).rejects.toMatchObject({ code: 'SETTINGS_PATH_RESERVED' })
+  })
+  it('shows a masked key, never the full key, and deletes only the requested entry', async () => {
+    const dir = await temp(); const credentials = new CredentialRepository(dir)
+    const kept = await credentials.save('oc_sk_keep_this_value_G4Pc'); const removed = await credentials.save('oc_sk_remove_me_99')
+    expect(await credentials.status(kept)).toEqual({ exists: true, masked: 'oc_sk…G4Pc' })
+    expect((await credentials.status(removed)).masked).toBe('oc_sk…e_99')
+    expect(await credentials.status(kept)).not.toHaveProperty('key')
+    await credentials.remove(removed)
+    expect(await credentials.status(removed)).toMatchObject({ exists: false })
+    expect(await credentials.get(kept)).toBe('oc_sk_keep_this_value_G4Pc')
+    expect((await stat(credentials.path)).mode & 0o777).toBe(0o600)
+    expect(await readFile(credentials.path, 'utf8')).not.toContain('remove_me')
+    await credentials.remove(removed)
+    expect(await credentials.status(kept)).toMatchObject({ exists: true })
+  })
+  it('masks short keys entirely and keeps the middle of a long key out of status', async () => {
+    const dir = await temp(); const credentials = new CredentialRepository(dir)
+    const short = await credentials.save('short')
+    expect(await credentials.status(short)).toEqual({ exists: true, masked: '…' })
+    const long = await credentials.save('oc_sk_abcdefghijklmnop')
+    expect(await credentials.status(long)).toEqual({ exists: true, masked: 'oc_sk…mnop' })
+    expect(JSON.stringify(await credentials.status(long))).not.toContain('abcdefghijklmnop')
   })
   it('preserves corrupt credential bytes and refuses replacement', async () => {
     const dir = await temp(); const credentials = new CredentialRepository(dir); const bytes = Buffer.from('{broken')
@@ -240,7 +263,7 @@ describe('LLM protocol selection with real HTTP and a local simulated server', (
     'anthropic-messages': { type: 'message', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: resultJson }] },
     gemini: { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'reasoning', thought: true }, { text: resultJson }] } }] }
   }
-  it.each(['openai-responses', 'anthropic-messages', 'gemini'] as const)('sends and parses %s without switching protocols', async apiType => {
+  it.each(['openai-responses', 'anthropic-messages', 'gemini'] as const)('sends and parses %s without switching protocols or adding hidden instructions', async apiType => {
     let count = 0
     const base = await server(async (request, response) => {
       count++
@@ -248,23 +271,25 @@ describe('LLM protocol selection with real HTTP and a local simulated server', (
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       expect(request.method).toBe('POST'); expect(request.headers['content-type']).toBe('application/json')
       const prompt = apiType === 'openai-responses' ? body.input : apiType === 'anthropic-messages' ? body.messages[0].content : body.contents[0].parts[0].text
+      expect(prompt).toContain('Return only valid JSON')
       expect(prompt).toContain('Response JSON example:\n' + JSON.stringify(defaultResponse, null, 2))
       expect(prompt).not.toContain('{{JSON}}')
       expect(JSON.stringify(body)).not.toContain('test-key')
       expect(request.url).not.toContain('test-key')
       if (apiType === 'openai-responses') {
         expect(request.url).toBe('/custom/v1/responses'); expect(request.headers.authorization).toBe('Bearer test-key')
-        expect(body).toMatchObject({ model: 'configured-model', stream: false, input: expect.stringContaining('She [went] home.'), instructions: expect.stringContaining('Return only valid JSON'), text: { format: { type: 'json_object' } }, max_output_tokens: 4096 })
-        expect(body.messages).toBeUndefined()
+        expect(body).toMatchObject({ model: 'configured-model', stream: false, input: expect.stringContaining('She [went] home.'), text: { format: { type: 'json_object' } }, max_output_tokens: 4096 })
+        expect(body.messages).toBeUndefined(); expect(body.instructions).toBeUndefined()
       } else if (apiType === 'anthropic-messages') {
         expect(request.url).toBe('/custom/v1/messages'); expect(request.headers['x-api-key']).toBe('test-key')
         expect(request.headers['anthropic-version']).toBe('2023-06-01'); expect(request.headers.authorization).toBeUndefined()
-        expect(body).toMatchObject({ model: 'configured-model', stream: false, max_tokens: 4096, system: expect.stringContaining('Return only valid JSON'), messages: [{ role: 'user', content: expect.stringContaining('She [went] home.') }] })
-        expect(body.response_format).toBeUndefined()
+        expect(body).toMatchObject({ model: 'configured-model', stream: false, max_tokens: 4096, messages: [{ role: 'user', content: expect.stringContaining('She [went] home.') }] })
+        expect(body.system).toBeUndefined(); expect(body.response_format).toBeUndefined()
       } else {
         expect(request.url).toBe('/custom/v1/models/configured-model:generateContent'); expect(request.headers['x-goog-api-key']).toBe('test-key')
         expect(request.headers.authorization).toBeUndefined()
-        expect(body).toMatchObject({ contents: [{ role: 'user', parts: [{ text: expect.stringContaining('She [went] home.') }] }], systemInstruction: { parts: [{ text: expect.stringContaining('Return only valid JSON') }] }, generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 } })
+        expect(body).toMatchObject({ contents: [{ role: 'user', parts: [{ text: expect.stringContaining('She [went] home.') }] }], generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 } })
+        expect(body.systemInstruction).toBeUndefined()
       }
       response.end(JSON.stringify(envelopes[apiType]))
     })

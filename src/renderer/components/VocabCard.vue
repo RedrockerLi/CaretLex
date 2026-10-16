@@ -45,7 +45,7 @@ async function save() {
 <template>
   <section class="vocab-card" :style="position" aria-label="词条详情" @mouseenter="emit('stay')" @mouseleave="emit('leave')">
     <header class="vocab-card-header"><div><span class="eyebrow">{{ entry.managed ? '本篇文档词条' : '区块外词条 · 只读' }}</span><h3>{{ entry.lemma }}</h3></div><button class="icon-button" :disabled="saving" aria-label="关闭词条卡" @click="emit('close')">×</button></header>
-    <template v-if="context.context"><p class="translation">{{ context.context.meaning_in_context }}</p><p class="example">{{ context.context.english_definition }}</p><p class="example">{{ context.context.original_sentence }}</p></template>
+    <p v-if="context.context" class="translation" :class="{ placeholder: !context.context.meaning_in_context }">{{ context.context.meaning_in_context || '尚无中文释义，可点击“编辑”补全。' }}</p>
     <p v-else class="notice notice-warning">{{ articleError || context.message }}</p>
     <details v-if="!editing"><summary>全部上下文与其他词义</summary><pre>{{ JSON.stringify(entry.value, null, 2) }}</pre></details>
     <div v-if="expanded || editing" class="full-value"><label v-if="editing" class="field-label" for="entry-json-edit">完整 JSON · lemma 已锁定{{ editing ? ' · 未保存' : '' }}</label><textarea v-if="editing" id="entry-json-edit" v-model="json" :disabled="saving" class="json-editor compact" rows="12" spellcheck="false"></textarea><pre v-else>{{ JSON.stringify(entry.value, null, 2) }}</pre></div>

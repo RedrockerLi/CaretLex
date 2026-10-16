@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, parseSettings, renameProfile } from '../../src/shared/settings'
-import { llmPreset, llmType, checkResponse, defaultResponse, isDefaultSaveStructure, presetCompatibility, type ProviderType } from '../../src/shared/providers'
+import { llmPreset, llmType, checkResponse, defaultPrompt, defaultResponse, isDefaultSaveStructure, legacyDefaultPrompt, presetCompatibility, type ProviderType } from '../../src/shared/providers'
 import { instantiateMapping, referencesSource, validateMappingTemplate } from '../../src/shared/mapping'
 import { locateContext, mergeEntry } from '../../src/shared/entries'
 import { planAdd, planEdit } from '../../src/shared/patch'
@@ -40,6 +40,17 @@ describe('provider configuration and presets', () => {
     for (const patch of [{ baseUrl: 'file:///tmp' }, { baseUrl: 'https://user:secret@example.com' }, { baseUrl: 'https://example.com/?secret=x' }, { model: '' }, { prompt: '{{bad}}' }, { prompt: '{{unfinished' }, { timeoutMs: 0 }, { timeoutMs: 1.2 }, { timeoutMs: 2147483648 }, { responseTemplate: [1, 'x'] }, { responseTemplate: [{ a: '' }, { b: '' }] }]) {
       expect(llmType.validateConfig({ ...profile().config, ...patch }, true).ok).toBe(false)
     }
+  })
+  it('keeps the JSON instruction inside the visible default prompt and upgrades untouched defaults only', () => {
+    const base = { ...llmType.defaultConfig() as Record<string, JsonValue>, baseUrl: 'https://example.com/v1', model: 'test' }
+    expect(defaultPrompt).toContain('Return only valid JSON')
+    expect(defaultPrompt).toContain('{{JSON}}')
+    expect(llmType.validateConfig(base, true)).toEqual({ ok: true, value: base })
+    const legacy = { ...base, prompt: legacyDefaultPrompt }
+    expect(llmType.validateConfig(legacy, true)).toEqual({ ok: true, value: base })
+    expect(legacy.prompt).toBe(legacyDefaultPrompt)
+    const edited = { ...base, prompt: 'Sentence: {{article.original_sentence}}' }
+    expect(llmType.validateConfig(edited, true)).toEqual({ ok: true, value: edited })
   })
   it('creates the complete preset from an arbitrary case-sensitive name', () => {
     expect(llmPreset('Local_AI-2')).toEqual({ lemma: 'Local_AI-2.lemma', contexts: [{ original_sentence: 'article.original_sentence', meaning_in_context: 'Local_AI-2.meaning_in_context', english_definition: 'Local_AI-2.english_definition' }], other_meanings: [{ meaning: 'Local_AI-2.other_meanings[].meaning', english_definition: 'Local_AI-2.other_meanings[].english_definition', example_sentence: 'Local_AI-2.other_meanings[].example_sentence' }] })

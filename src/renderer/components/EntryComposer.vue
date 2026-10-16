@@ -9,8 +9,7 @@ const parsed = computed(() => props.session.parse())
   <section class="entry-composer" aria-labelledby="composer-title" @mousedown.stop>
     <header class="composer-header"><div><p class="eyebrow">{{ session.requestId ? '正在获取自动数据' : '未保存的词条草稿' }}</p><h2 id="composer-title">保存选词</h2></div><button class="icon-button" :disabled="session.saving" aria-label="关闭录入卡" @click="emit('cancel')">×</button></header>
     <div class="selected-context"><span class="context-label">原词</span><strong>{{ session.location.selected }}</strong></div>
-    <p v-if="session.article" class="example article-sentence">{{ session.article.original_sentence }}</p>
-    <p v-else class="field-hint">原句尚不可用；可手动整理完整 JSON。</p>
+    <p v-if="!session.article" class="field-hint">原句尚不可用；可手动整理完整 JSON。</p>
     <label class="field-label" for="lemma-input">词条原型（lemma）{{ session.locked ? ' · 身份已锁定' : ' · 待确认' }}</label>
     <input id="lemma-input" :value="session.lemma" :disabled="session.locked || session.saving" autocomplete="off" spellcheck="false" @input="session.setLemma(($event.target as HTMLInputElement).value)" />
     <p v-if="!session.locked" class="field-hint">初始小写词形只是建议，请确认词条原型；本地检查不验证语义。</p>

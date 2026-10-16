@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, onBeforeUnmount, reactive, ref, shallowReactive, shallowRef, watch, type VNodeChild } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, shallowRef, watch, type VNodeChild } from 'vue'
 import { cloneJson } from '../../shared/json'
 import { EntrySession } from '../../shared/entry-session'
 import { referencesSource } from '../../shared/mapping'
@@ -56,7 +56,14 @@ const hoverSentence = ref<string>()
 const hoverArticleError = ref('')
 const capturedHover = shallowRef<VocabRecord>()
 let hoverRequest = 0
-const selectionPoint = ref({ x: 0, y: 0 })
+// 选区锚点：捕获时的 client 矩形 + 阅读区滚动偏移，滚动/缩放时重新定位。
+const selectionAnchor = shallowRef<{ rect: { top: number; bottom: number; left: number; right: number }; scrollTop: number; scrollLeft: number } | null>(null)
+const anchorTick = ref(0)
+const toolbarElement = ref<HTMLElement | null>(null)
+const panelElement = ref<HTMLElement | null>(null)
+const viewportSize = ref({ width: window.innerWidth, height: window.innerHeight })
+let anchorObserver: ResizeObserver | undefined
+let anchorFrame: number | undefined
 const hoverLemma = ref('')
 const hoverPoint = ref({ x: 0, y: 0 })
 const imageStates = reactive<Record<string, { src: string; busy: boolean; tried: boolean; error: boolean }>>({})
@@ -110,11 +117,72 @@ function visibleOffset(runElement: HTMLElement, node: Node, offset: number) {
   return range.toString().length
 }
 
+function refreshAnchor() {
+  viewportSize.value = { width: window.innerWidth, height: window.innerHeight }
+  anchorTick.value++
+}
+
+function scheduleAnchorRefresh() {
+  if (anchorFrame !== undefined) return
+  anchorFrame = window.requestAnimationFrame(() => { anchorFrame = undefined; refreshAnchor() })
+}
+
+const selectionRect = computed(() => {
+  void anchorTick.value // 滚动/缩放后重新读取阅读区滚动偏移
+  const base = selectionAnchor.value
+  if (!base) return null
+  const root = readerRoot.value
+  const deltaY = base.scrollTop - (root?.scrollTop ?? 0)
+  const deltaX = base.scrollLeft - (root?.scrollLeft ?? 0)
+  return { top: base.rect.top + deltaY, bottom: base.rect.bottom + deltaY, left: base.rect.left + deltaX, right: base.rect.right + deltaX }
+})
+
+const anchorVisible = computed(() => {
+  void anchorTick.value
+  const rect = selectionRect.value
+  if (!rect) return false
+  return rect.bottom > 0 && rect.top < viewportSize.value.height && rect.right > 0 && rect.left < viewportSize.value.width
+})
+
+/** 贴着选区显示：默认在下方，空间不足时翻到上方，并横向夹紧在视口内。 */
+function placeNearSelection(element: HTMLElement | null, fallback: { width: number; height: number }) {
+  const rect = selectionRect.value
+  if (!rect) return {}
+  const width = element?.offsetWidth || fallback.width
+  const height = element?.offsetHeight || fallback.height
+  const margin = 12
+  const left = Math.max(margin, Math.min(rect.left, viewportSize.value.width - width - margin))
+  const below = rect.bottom + 8
+  const top = below + height <= viewportSize.value.height - margin ? below : Math.max(margin, rect.top - height - 8)
+  return { left: `${left}px`, top: `${top}px` }
+}
+
+const toolbarStyle = computed(() => {
+  void anchorTick.value
+  return anchorVisible.value ? placeNearSelection(toolbarElement.value, { width: 240, height: 40 }) : { display: 'none' }
+})
+const panelStyle = computed(() => {
+  void anchorTick.value
+  return placeNearSelection(panelElement.value, { width: Math.min(480, viewportSize.value.width - 24), height: Math.min(360, viewportSize.value.height - 32) })
+})
+
+// 面板出现或内容变化后按真实尺寸重新定位。
+watch([toolbarElement, panelElement], ([toolbar, panel]) => {
+  anchorObserver?.disconnect()
+  const element = panel ?? toolbar
+  if (element) {
+    anchorObserver ??= new ResizeObserver(() => scheduleAnchorRefresh())
+    anchorObserver.observe(element)
+  }
+  void nextTick(refreshAnchor)
+}, { flush: 'post' })
+
 function inspectSelection() {
   if (composerOpen.value || cardEditing.value) return
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !readerRoot.value) {
     selectedContext.value = null
+    selectionAnchor.value = null
     selectionError.value = ''
     return
   }
@@ -123,6 +191,7 @@ function inspectSelection() {
   const endRun = elementFor(range.endContainer)?.closest<HTMLElement>('[data-text-run]')
   if (!startRun || !endRun || startRun !== endRun || !readerRoot.value.contains(startRun)) {
     selectedContext.value = null
+    selectionAnchor.value = null
     selectionError.value = '请选择同一段普通文本中的一个英文单词。'
     return
   }
@@ -130,11 +199,13 @@ function inspectSelection() {
   const textRun = parsed.value.textRuns[index]
   if (!textRun) {
     selectedContext.value = null
+    selectionAnchor.value = null
     selectionError.value = '无法将所选文字映射到文档源码。'
     return
   }
   if (textRun.ancestorTypes.some((type) => ['link', 'linkReference', 'inlineCode', 'code', 'html'].includes(type))) {
     selectedContext.value = null
+    selectionAnchor.value = null
     selectionError.value = '代码、链接和原始 HTML 暂不支持存词。'
     return
   }
@@ -143,6 +214,7 @@ function inspectSelection() {
   const result = mapVisibleRange(parsed.value, textRun.sourceSpan, from, to)
   if (!result.ok) {
     selectedContext.value = null
+    selectionAnchor.value = null
     selectionError.value = result.reason
     return
   }
@@ -153,10 +225,12 @@ function inspectSelection() {
     documentId: props.tab.id,
     baseRevision: props.tab.document.snapshot.revision,
   }
-  selectionPoint.value = {
-    x: Math.max(12, Math.min(rect.left, window.innerWidth - 490)),
-    y: Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - Math.min(720, window.innerHeight - 32))),
+  selectionAnchor.value = {
+    rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+    scrollTop: readerRoot.value.scrollTop,
+    scrollLeft: readerRoot.value.scrollLeft,
   }
+  refreshAnchor()
   selectionError.value = ''
 }
 
@@ -476,6 +550,7 @@ const MarkdownBody = defineComponent(() => () => h('div', { class: 'markdown-con
 watch(() => composerOpen.value || cardEditing.value, value => emit('unsaved', value))
 watch(() => props.tab.document.snapshot.revision, () => {
   selectedContext.value = null
+  selectionAnchor.value = null
   if (session.value && !session.value.saving) { cancelRequest(); session.value.invalidate('文档版本已变化；编辑稿保留，请关闭此稿并按新正文重新开始。') }
   if (!cardEditing.value) hoverLemma.value = ''
   ++hoverRequest
@@ -489,8 +564,12 @@ watch(() => props.settingsRevision, () => {
   }
 })
 watch(() => props.active, active => { if (!active) { cancelRequest(); ++hoverRequest } })
+onMounted(() => { window.addEventListener('resize', scheduleAnchorRefresh) })
 onBeforeUnmount(() => {
   cancelRequest(); ++hoverRequest; emit('unsaved', false)
+  window.removeEventListener('resize', scheduleAnchorRefresh)
+  anchorObserver?.disconnect()
+  if (anchorFrame !== undefined) window.cancelAnimationFrame(anchorFrame)
   if (hoverTimer !== undefined) window.clearTimeout(hoverTimer)
   if (closeTimer !== undefined) window.clearTimeout(closeTimer)
 })
@@ -508,17 +587,17 @@ onBeforeUnmount(() => {
     <div v-if="!settingsAvailable" class="notice notice-error reader-blocking-notice" role="status">
       设置文件无法读取。恢复设置 JSON 后才能存词；当前阅读和源码仍可使用。
     </div>
-    <div class="reader-scroll" ref="readerRoot" @mouseup="inspectSelection" @keyup="inspectSelection">
+    <div class="reader-scroll" ref="readerRoot" @mouseup="inspectSelection" @keyup="inspectSelection" @scroll="scheduleAnchorRefresh">
       <MarkdownBody />
     </div>
 
     <div v-if="selectionError" class="selection-message" role="status">{{ selectionError }}</div>
-    <div v-if="selectedContext && !composerOpen" class="selection-toolbar" :style="{ left: `${selectionPoint.x}px`, top: `${selectionPoint.y}px` }">
+    <div v-if="selectedContext && !composerOpen" ref="toolbarElement" class="selection-toolbar" :style="toolbarStyle">
       <span>已选：{{ selectedContext.selected }}</span>
       <button class="button button-primary button-small" type="button" :disabled="hasBlockingDiagnostics || !settingsAvailable" @mousedown.prevent="startComposer">存为词条</button>
     </div>
 
-    <div v-if="composerOpen && session" class="floating-panel" :style="{ left: `${selectionPoint.x}px`, top: `${selectionPoint.y}px` }">
+    <div v-if="composerOpen && session" ref="panelElement" class="floating-panel" :style="panelStyle">
       <EntryComposer :session="session" :busy="busy" @cancel="closeComposer" @submit="onComposerSubmit" @retry="fetchSources" />
     </div>
     <VocabCard v-if="hoveredEntry" :entry="hoveredEntry" :x="hoverPoint.x" :y="hoverPoint.y" :busy="busy"

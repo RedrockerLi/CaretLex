@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFile, rename, rm, open, constants } from 'node:fs/promises'
@@ -13,6 +13,9 @@ import { validateIdentity } from '../shared/entries'
 import { serializeJsonValue } from '../shared/json'
 import type { DocumentResult, SaveResult } from '../shared/bridge'
 import type { SourceSpan } from '../shared/types'
+import { applicationMenuTemplate, updateApplicationMenu } from './menu'
+import { initialMenuState, isMenuState } from '../shared/menu'
+import { ensureLinuxDesktopEntry, xdgDataHome } from './desktop-integration'
 
 const documents = new DocumentRepository()
 let settings: SettingsRepository
@@ -20,9 +23,12 @@ let providers: ProviderService
 let credentials: CredentialRepository
 let mainWindow: BrowserWindow | undefined
 let closeAllowed = false
+let currentMenuState = initialMenuState
 let initialFile: string | undefined = process.argv.slice(1).find((arg) => /\.md(?:own)?$/i.test(arg) && !arg.startsWith('-'))
 const MAX_INPUT_TEXT_BYTES = 16 * 1024 * 1024
 const moduleDirectory = __dirname
+// 开发（out/main）、打包（app.asar/out/main）与菜单 smoke 三种布局下指向同一相对位置。
+const windowIconPath = () => resolve(moduleDirectory, '../../branding/app-icon.png')
 
 function asDocumentResult(value: OpenDocument): DocumentResult {
   return documentToWire(value)
@@ -115,6 +121,20 @@ function requireBaseRevision(value: unknown): string | undefined {
 }
 
 function registerHandlers(): void {
+  ipcMain.handle('edit:history', (event, command: unknown) => {
+    guard(event)
+    if (command === 'undo') mainWindow?.webContents.undo()
+    else if (command === 'redo') mainWindow?.webContents.redo()
+    else throw new CaretLexError('INVALID_ARGUMENT', '编辑历史命令无效。')
+  })
+  ipcMain.on('menu:state', (event, state: unknown) => {
+    guard(event)
+    const menu = Menu.getApplicationMenu()
+    if (menu && isMenuState(state)) {
+      currentMenuState = state
+      updateApplicationMenu(menu, state)
+    }
+  })
   ipcMain.handle('document:startup', async (event) => {
     guard(event)
     if (!initialFile) return null
@@ -298,6 +318,7 @@ function registerHandlers(): void {
   ipcMain.handle('provider:cancel', (event, id: unknown) => { guard(event); providers.cancel(requireString(id, 'requestId', 128)) })
   ipcMain.handle('credential:save', (event, key: unknown) => { guard(event); return credentials.save(requireString(key, 'key', 16384)) })
   ipcMain.handle('credential:status', (event, ref: unknown) => { guard(event); return credentials.status(ref === undefined ? undefined : requireString(ref, 'apiKeyRef', 128)) })
+  ipcMain.handle('credential:remove', (event, ref: unknown) => { guard(event); return credentials.remove(requireString(ref, 'apiKeyRef', 128)) })
 
   ipcMain.handle('system:open-external', async (event, rawUrl: unknown) => {
     guard(event)
@@ -383,12 +404,32 @@ async function atomicOutput(path: string, bytes: Buffer): Promise<void> {
 }
 
 function createWindow(): void {
+  closeAllowed = false
+  currentMenuState = initialMenuState
+  const menu = Menu.buildFromTemplate(applicationMenuTemplate({
+    isMac: process.platform === 'darwin',
+    development: Boolean(process.env.ELECTRON_RENDERER_URL),
+    command: command => {
+      // Mode checks follow the renderer's accepted state, including cancelled switches.
+      updateApplicationMenu(menu, currentMenuState)
+      mainWindow?.webContents.send('menu:command', command)
+    },
+    about: () => {
+      if (mainWindow) void dialog.showMessageBox(mainWindow, {
+        type: 'info', title: '关于 CaretLex', message: 'CaretLex',
+        detail: `版本 ${app.getVersion()}\n英文 Markdown 阅读与文档内词条笔记。`, buttons: ['确定']
+      })
+    }
+  }))
+  updateApplicationMenu(menu, initialMenuState)
+  Menu.setApplicationMenu(menu)
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 850,
     minWidth: 850,
     minHeight: 620,
     show: false,
+    icon: windowIconPath(),
     backgroundColor: '#f4f6f8',
     webPreferences: {
       preload: resolve(moduleDirectory, '../preload/index.js'),
@@ -420,6 +461,11 @@ function publishSettings(): void {
 
 app.whenReady().then(() => {
   if (!singleInstance) return
+  if (process.platform === 'linux') {
+    // Wayland 任务栏按 app_id 匹配已安装的 .desktop；缺失时补一份用户级条目与图标。
+    void ensureLinuxDesktopEntry({ execPath: process.execPath, sourceIcon: windowIconPath(), dataHome: xdgDataHome() })
+      .catch(error => console.warn('桌面条目安装失败：', error))
+  }
   settings = new SettingsRepository(app.getPath('userData'))
   credentials = new CredentialRepository(app.getPath('userData'))
   const llm = createLlmAdapter({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref) })

@@ -60,9 +60,9 @@ export function responseContent(config: LlmProviderConfig, outer: unknown): Core
   }
 }
 
+/** Bodies carry the substituted Prompt only; the app adds no hidden instruction text. */
 export function protocolRequest(config: LlmProviderConfig, prompt: string, key?: string): { url: string; headers: Record<string, string>; body: string } {
   const base = config.baseUrl.replace(/\/+$/, '')
-  const instruction = 'Return only valid JSON matching the following response example. No Markdown fences or explanations. Array lengths may vary.\n' + JSON.stringify(config.responseTemplate)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   let path: string
   let body: JsonValue
@@ -70,23 +70,23 @@ export function protocolRequest(config: LlmProviderConfig, prompt: string, key?:
     case 'openai-chat':
       path = '/chat/completions'
       if (key) headers.Authorization = `Bearer ${key}`
-      body = { model: config.model, messages: [{ role: 'system', content: instruction }, { role: 'user', content: prompt }], stream: false, max_completion_tokens: config.maxOutputTokens, ...(config.jsonMode ? { response_format: { type: 'json_object' } } : {}) }
+      body = { model: config.model, messages: [{ role: 'user', content: prompt }], stream: false, max_completion_tokens: config.maxOutputTokens, ...(config.jsonMode ? { response_format: { type: 'json_object' } } : {}) }
       break
     case 'openai-responses':
       path = '/responses'
       if (key) headers.Authorization = `Bearer ${key}`
-      body = { model: config.model, instructions: instruction, input: prompt, stream: false, max_output_tokens: config.maxOutputTokens, ...(config.jsonMode ? { text: { format: { type: 'json_object' } } } : {}) }
+      body = { model: config.model, input: prompt, stream: false, max_output_tokens: config.maxOutputTokens, ...(config.jsonMode ? { text: { format: { type: 'json_object' } } } : {}) }
       break
     case 'anthropic-messages':
       path = '/messages'
       headers['anthropic-version'] = '2023-06-01'
       if (key) headers['x-api-key'] = key
-      body = { model: config.model, system: instruction, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: config.maxOutputTokens }
+      body = { model: config.model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: config.maxOutputTokens }
       break
     case 'gemini':
       path = `/models/${encodeURIComponent(config.model.replace(/^models\//, ''))}:generateContent`
       if (key) headers['x-goog-api-key'] = key
-      body = { systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: config.maxOutputTokens, ...(config.jsonMode ? { responseMimeType: 'application/json' } : {}) } }
+      body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: config.maxOutputTokens, ...(config.jsonMode ? { responseMimeType: 'application/json' } : {}) } }
       break
   }
   return { url: base + path, headers, body: JSON.stringify(body) }

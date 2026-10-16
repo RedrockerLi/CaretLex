@@ -6,6 +6,9 @@ import SourceEditor from './components/SourceEditor.vue'
 import { useWorkspaceStore } from './stores/workspace'
 import type { JsonValue, WorkspaceTab } from './types'
 import { defaultSettings } from '../shared/settings'
+import type { MenuCommand, MenuState } from '../shared/menu'
+import { EditorView } from '@codemirror/view'
+import { undo, redo } from '@codemirror/commands'
 
 const workspace = useWorkspaceStore()
 const systemDark = ref(window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
@@ -20,9 +23,28 @@ const settingsForReader = computed(() => settingsValue.value ?? defaultSettings)
 const settingsAvailable = computed(() => settingsValue.value !== null)
 const pendingAction = computed(() => workspace.pendingAction)
 const pendingEntryDraft = computed(() => pendingAction.value?.kind === 'close-window' ? Object.values(workspace.entryDrafts).some(Boolean) || credentialDraft.value : pendingAction.value && workspace.entryDrafts[pendingAction.value.tabId])
+const menuState = computed<MenuState>(() => {
+  const tab = activeTab.value
+  const available = !workspace.busy && !pendingAction.value
+  const documentAvailable = available && !settingsOpen.value && !!tab
+  return {
+    canManageFiles: available,
+    canSave: documentAvailable && (!!tab?.dirty || !tab?.document.snapshot.path),
+    canSaveAs: documentAvailable,
+    canExport: documentAvailable && tab?.mode === 'read' && !!tab.document.parsed.writable,
+    canCloseTab: documentAvailable,
+    canSwitchMode: documentAvailable,
+    canOpenSettings: available,
+    canToggleTheme: available && settingsAvailable.value && !workspace.settingsDirty && !credentialDraft.value,
+    mode: settingsOpen.value ? null : tab?.mode ?? null
+  }
+})
+// The toolbar keeps 阅读/源码 usable while the settings overlay is open so it can be left without scrolling.
+const toolbarSwitchAvailable = computed(() => !!activeTab.value && !workspace.busy && !pendingAction.value)
 let unwatchDocuments: (() => void) | undefined
 let unwatchSettings: (() => void) | undefined
 let unwatchClose: (() => void) | undefined
+let unwatchMenu: (() => void) | undefined
 let mediaQuery: MediaQueryList | undefined
 
 function applyTheme() {
@@ -33,12 +55,18 @@ function onSystemTheme(event: MediaQueryListEvent) {
   systemDark.value = event.matches
 }
 
-async function showOpen() { await workspace.openMarkdown() }
-async function showNew() { await workspace.newDocument() }
+async function showOpen() {
+  await workspace.openMarkdown()
+  if (activeTab.value) workspace.settingsOpen = false
+}
+async function showNew() {
+  await workspace.newDocument()
+  if (activeTab.value) workspace.settingsOpen = false
+}
 
 function openSettings() {
-  workspace.settingsOpen = true
-  if (!workspace.settingsSnapshot) void workspace.loadSettings()
+  workspace.settingsOpen = !workspace.settingsOpen
+  if (workspace.settingsOpen && !workspace.settingsSnapshot) void workspace.loadSettings()
 }
 
 async function toggleTheme() {
@@ -50,16 +78,52 @@ async function toggleTheme() {
 }
 
 async function saveCurrent(tab = activeTab.value, as = false) {
-  if (!tab) return false
+  if (!tab || workspace.busy) return false
   return workspace.saveSource(tab.id, as)
 }
 
-function switchMode(tab: WorkspaceTab) {
-  if (tab.mode === 'source') {
+// Toolbar navigation also leaves the settings overlay; the native menu keeps its own gating.
+function switchFromToolbar(tab: WorkspaceTab, mode: 'read' | 'source') {
+  workspace.settingsOpen = false
+  switchMode(tab, mode)
+}
+
+function switchMode(tab: WorkspaceTab, mode: 'read' | 'source') {
+  if (tab.mode === mode) return
+  if (mode === 'read') {
     if (tab.dirty) workspace.pendingAction = { kind: 'switch-mode', tabId: tab.id, mode: 'read' }
     else workspace.setMode(tab.id, 'read')
   } else {
     workspace.setMode(tab.id, 'source')
+  }
+}
+
+async function handleMenuCommand(command: MenuCommand) {
+  const state = menuState.value
+  const tab = activeTab.value
+  try {
+    switch (command) {
+      case 'undo':
+      case 'redo': {
+        const editorElement = document.activeElement?.closest('.cm-editor')
+        const editor = editorElement ? EditorView.findFromDOM(editorElement as HTMLElement) : null
+        if (editor) (command === 'undo' ? undo : redo)(editor)
+        else await window.caretlex.editHistory(command)
+        break
+      }
+      case 'new': if (state.canManageFiles) await showNew(); break
+      case 'open': if (state.canManageFiles) await showOpen(); break
+      case 'save': if (state.canSave) await saveCurrent(); break
+      case 'save-as': if (state.canSaveAs) await saveCurrent(tab, true); break
+      case 'export': if (state.canExport) await exportVocabulary(); break
+      case 'close-tab': if (state.canCloseTab && tab) requestCloseTab(tab); break
+      case 'read-mode': if (state.canSwitchMode && tab) switchMode(tab, 'read'); break
+      case 'source-mode': if (state.canSwitchMode && tab) switchMode(tab, 'source'); break
+      case 'settings': if (state.canOpenSettings) openSettings(); break
+      case 'toggle-theme': if (state.canToggleTheme) await toggleTheme(); break
+    }
+  } catch (error) {
+    workspace.bridgeError = error instanceof Error ? error.message : '菜单操作失败。'
   }
 }
 
@@ -149,6 +213,7 @@ onMounted(async () => {
   mediaQuery?.addEventListener('change', onSystemTheme)
   unwatchDocuments = window.caretlex.onDocumentChanged((event) => workspace.applyExternalChange(event.document))
   unwatchSettings = window.caretlex.onSettingsChanged((snapshot) => workspace.applyExternalSettings(snapshot))
+  unwatchMenu = window.caretlex.onMenuCommand(command => { void handleMenuCommand(command) })
   unwatchClose = window.caretlex.onRequestClose(() => {
     if (workspace.tabs.some((tab) => tab.dirty) || workspace.settingsDirty || credentialDraft.value || Object.values(workspace.entryDrafts).some(Boolean)) workspace.pendingAction = { kind: 'close-window' }
     else void closeAllDocuments()
@@ -158,11 +223,13 @@ onMounted(async () => {
 })
 
 watch(effectiveDark, applyTheme, { immediate: true })
+watch(menuState, state => window.caretlex.updateMenuState({ ...state }), { immediate: true })
 
 onBeforeUnmount(() => {
   unwatchDocuments?.()
   unwatchSettings?.()
   unwatchClose?.()
+  unwatchMenu?.()
   mediaQuery?.removeEventListener('change', onSystemTheme)
 })
 </script>
@@ -172,18 +239,18 @@ onBeforeUnmount(() => {
     <header class="app-toolbar">
       <div class="brand-mark" aria-label="CaretLex">[<span>^</span>w-]</div>
       <div class="toolbar-divider"></div>
-      <button class="toolbar-button" type="button" :disabled="workspace.busy" @click="showNew">新建</button>
-      <button class="toolbar-button" type="button" :disabled="workspace.busy" @click="showOpen">打开 Markdown</button>
+      <button class="toolbar-button" type="button" title="新建文档（Ctrl/Cmd+N）" :disabled="!menuState.canManageFiles" @click="showNew">新建</button>
+      <button class="toolbar-button" type="button" title="打开 Markdown（Ctrl/Cmd+O）" :disabled="!menuState.canManageFiles" @click="showOpen">打开 Markdown</button>
       <template v-if="activeTab">
         <span class="toolbar-spacer"></span>
-        <button class="toolbar-button" type="button" :class="{ selected: activeTab.mode === 'read' }" @click="switchMode(activeTab)">阅读</button>
-        <button class="toolbar-button" type="button" :class="{ selected: activeTab.mode === 'source' }" @click="switchMode(activeTab)">源码</button>
-        <button v-if="activeTab.mode === 'source'" class="button button-primary button-small" type="button" :disabled="workspace.busy || !activeTab.dirty" @click="saveCurrent(activeTab)">保存源码</button>
-        <button v-if="activeTab.mode === 'read'" class="toolbar-button" type="button" :disabled="!activeTab.document.parsed.writable || workspace.busy" @click="exportVocabulary">导出 JSON</button>
+        <button class="toolbar-button" type="button" title="阅读模式（Ctrl/Cmd+Shift+R）" :class="{ selected: activeTab.mode === 'read' }" :disabled="!toolbarSwitchAvailable" @click="switchFromToolbar(activeTab, 'read')">阅读</button>
+        <button class="toolbar-button" type="button" title="源码模式（Ctrl/Cmd+Shift+E）" :class="{ selected: activeTab.mode === 'source' }" :disabled="!toolbarSwitchAvailable" @click="switchFromToolbar(activeTab, 'source')">源码</button>
+        <button v-if="activeTab.mode === 'source'" class="button button-primary button-small" type="button" title="保存（Ctrl/Cmd+S）" :disabled="!menuState.canSave" @click="saveCurrent(activeTab)">保存源码</button>
+        <button v-if="activeTab.mode === 'read'" class="toolbar-button" type="button" :disabled="!menuState.canExport" @click="exportVocabulary">导出 JSON</button>
       </template>
       <span class="toolbar-spacer"></span>
-      <button class="icon-button theme-toggle" type="button" :aria-label="effectiveDark ? '切换浅色主题' : '切换深色主题'" @click="toggleTheme">{{ effectiveDark ? '☼' : '◐' }}</button>
-      <button class="toolbar-button settings-trigger" type="button" @click="openSettings">设置</button>
+      <button class="icon-button theme-toggle" type="button" :disabled="!menuState.canToggleTheme" :aria-label="effectiveDark ? '切换浅色主题' : '切换深色主题'" @click="toggleTheme">{{ effectiveDark ? '☼' : '◐' }}</button>
+      <button class="toolbar-button settings-trigger" type="button" title="设置（Ctrl/Cmd+,）" :disabled="!menuState.canOpenSettings" @click="openSettings">设置</button>
     </header>
 
     <nav v-if="workspace.tabs.length" class="tab-strip" aria-label="打开的文档">
@@ -222,7 +289,7 @@ onBeforeUnmount(() => {
       />
     </section>
     <section v-for="tab in workspace.tabs" :key="tab.id" v-show="!settingsOpen && activeTab?.id === tab.id" class="document-workspace">
-      <SourceEditor v-if="tab.mode === 'source'" :model-value="tab.draft" :dark="effectiveDark" @update:model-value="workspace.updateDraft(tab.id, $event)" @save="saveCurrent(tab)" />
+      <SourceEditor v-if="tab.mode === 'source'" :model-value="tab.draft" :dark="effectiveDark" @update:model-value="workspace.updateDraft(tab.id, $event)" />
       <ReaderView v-show="tab.mode === 'read'" :tab="tab" :active="!settingsOpen && activeTab?.id === tab.id && tab.mode === 'read'" :busy="workspace.busy" :dark="effectiveDark"
         :settings="settingsForReader" :settings-available="settingsAvailable" :settings-revision="runtimeSettings?.revision ?? ''"
         :on-save-entry="workspace.addVocabulary" :on-edit-entry="workspace.editVocabulary" :on-delete-entry="workspace.deleteVocabulary"

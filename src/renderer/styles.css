@@ -286,8 +286,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent) !importa
 
 .vocab-card { position: fixed; z-index: 40; width: min(340px, calc(100vw - 24px)); max-height: min(500px, calc(100vh - 24px)); padding: 16px; overflow: auto; }
 .vocab-card-header h3 { font-size: 17px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.translation { margin: 13px 0 4px; font-size: 15px; font-weight: 600; }
-.example { margin: 10px 0; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.translation { margin: 13px 0 4px; color: var(--ink); font-size: 15px; font-weight: 400; line-height: 1.65; }
+.translation.placeholder { color: var(--muted); font-size: 13px; }
 .full-value pre { max-height: 220px; padding: 9px; overflow: auto; border-radius: 6px; color: var(--ink); background: var(--control); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .full-value .json-editor { min-height: 120px; }
 .vocab-card-actions, .card-links { display: flex; align-items: center; justify-content: flex-end; margin-top: 14px; gap: 11px; }
@@ -307,7 +307,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent) !importa
 
 .settings-overlay { position: absolute; z-index: 8; inset: 54px 0 0; overflow: auto; background: var(--canvas); }
 .settings-page { width: min(1100px, calc(100% - 48px)); margin: 32px auto; }
-.settings-heading { align-items: center; margin-bottom: 24px; }
+.settings-heading { position: sticky; z-index: 2; top: 0; align-items: center; margin-bottom: 24px; padding: 12px 0; background: var(--canvas); }
 .settings-heading h1 { font-size: 24px; }
 .settings-heading-description { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .settings-heading-actions .icon-button { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
@@ -365,7 +365,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent) !importa
 .entry-composer, .vocab-card { width: min(480px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow: auto; }
 .floating-panel { width: min(480px, calc(100vw - 24px)); max-height: calc(100vh - 32px); }
 .composer-actions { flex-wrap: wrap; }
-.article-sentence { white-space: pre-wrap; }
 
 /* Settings forms keep editors readable and compact controls aligned. */
 .settings-heading-actions { display: flex; align-items: center; gap: 12px; }
@@ -381,6 +380,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent) !importa
 .settings-file .path-value { margin: 6px 0 0; padding: 0; border-radius: 0; background: transparent; line-height: 1.6; }
 .settings-page .field-label { display: block; margin: 0 0 8px; font-size: 12px; }
 .settings-page .field-hint { display: block; margin: 7px 0 0; line-height: 1.5; font-size: 11px; }
+.key-row { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 12px; }
+.key-name { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.key-mask { padding: 3px 8px; border-radius: 5px; color: var(--ink); background: var(--control); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
+.key-missing { color: var(--danger); }
+.key-row .text-button { margin-left: auto; }
 .settings-page .section-title-row { gap: 18px; }
 .settings-page input:not([type="checkbox"]), .settings-page select, .settings-page textarea { width: 100%; min-width: 0; max-width: none; }
 .settings-page textarea { display: block; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--control); outline: none; resize: vertical; font-size: 12px; line-height: 1.65; }

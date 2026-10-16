@@ -50,7 +50,7 @@ provider 实例为 `{name, type, enabled, config}`。name 为区分大小写的 
 
 `LLM` config 包含 `apiType`、`baseUrl`、`model`、可选 `apiKeyRef`、`prompt`、`responseTemplate`、`jsonMode`、`timeoutMs` 和 `maxOutputTokens`。默认 API 类型为 `openai-chat`，地址、模型为空，JSON mode 关闭，超时 60000 ms，最大输出 tokens 为 4096。停用配置可未填写完整地址/模型；启用需合法 HTTP/HTTPS 基础地址与非空模型。timeoutMs 和 maxOutputTokens 为 1–2147483647 的整数。Base URL 不含用户认证、查询或片段。
 
-prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 与 `{{JSON}}`。`{{JSON}}` 展开为当前实例 responseTemplate 的 JSON 文本，使用两空格缩进；默认 prompt 包含此变量。所有变量均一次字面替换，不递归求值。不支持的变量报错。响应示例声明对象必有字段及其类型；额外字段允许，数组样例声明统一元素结构，长度不限。空数组不声明元素内部格式，null 只声明 null 类型。检查不验证语义。
+prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 与 `{{JSON}}`。`{{JSON}}` 展开为当前实例 responseTemplate 的 JSON 文本，使用两空格缩进；默认 prompt 包含此变量与纯 JSON 输出要求，且默认 prompt 是设置页展示、可直接编辑的全部发送内容。所有变量均一次字面替换，不递归求值；请求不附加隐藏指令。加载时与旧默认文本完全一致的 prompt 升级为新默认，用户改过的内容保持原样。不支持的变量报错。响应示例声明对象必有字段及其类型；额外字段允许，数组样例声明统一元素结构，长度不限。空数组不声明元素内部格式，null 只声明 null 类型。检查不验证语义。
 
 普通设置快照包含路径、原始文本、原始字节 revision、可选已解析值、错误和恢复 token。可解码的非法文件可按原始 revision 重写；普通保存拒绝无法安全解码或超限的原文件。用户点击“恢复默认设置”时，主进程校验绑定当前文件与路径指针字节的 token 后原子写入默认配置；该显式操作可以替换无法解析、无法解码或超限的配置。损坏的路径指针恢复为本机默认设置路径。冲突不覆盖，凭据文件保留。
 
@@ -74,20 +74,20 @@ prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 与 
 
 ## LLM HTTP 与凭据
 
-API 类型决定协议，基础路径保留，尾部 `/` 去除后追加表中端点，不自动添加版本路径。生产使用真实 HTTP POST，非流式输出；所有请求均含本地替换后的 Prompt 和响应 JSON 示例说明。
+API 类型决定协议，基础路径保留，尾部 `/` 去除后追加表中端点，不自动添加版本路径。生产使用真实 HTTP POST，非流式输出；请求体只包含本地替换后的 Prompt 与协议参数，不含应用生成的 system 文本。
 
 | apiType | 追加端点 | 请求与认证 | JSON mode | 响应文本 |
 |---|---|---|---|---|
-| `openai-chat` | `/chat/completions` | model、messages、max_completion_tokens、stream: false；Bearer Key | response_format.type = json_object | choices[0].message.content，finish_reason = stop |
-| `openai-responses` | `/responses` | model、instructions、input、max_output_tokens、stream: false；Bearer Key | text.format.type = json_object | completed output 中 message.content 的 output_text |
-| `anthropic-messages` | `/messages` | model、system、messages、max_tokens、stream: false；x-api-key，anthropic-version = 2023-06-01 | 不提供；Prompt 请求 JSON | assistant message 的 text，stop_reason = end_turn |
-| `gemini` | `/models/{model}:generateContent` | systemInstruction、contents、generationConfig.maxOutputTokens；x-goog-api-key | generationConfig.responseMimeType = application/json | candidates[0].content.parts.text，finishReason = STOP |
+| `openai-chat` | `/chat/completions` | model、单条 user message、max_completion_tokens、stream: false；Bearer Key | response_format.type = json_object | choices[0].message.content，finish_reason = stop |
+| `openai-responses` | `/responses` | model、input、max_output_tokens、stream: false；Bearer Key | text.format.type = json_object | completed output 中 message.content 的 output_text |
+| `anthropic-messages` | `/messages` | model、单条 user message、max_tokens、stream: false；x-api-key，anthropic-version = 2023-06-01 | 不提供；Prompt 请求 JSON | assistant message 的 text，stop_reason = end_turn |
+| `gemini` | `/models/{model}:generateContent` | contents、generationConfig.maxOutputTokens；x-goog-api-key | generationConfig.responseMimeType = application/json | candidates[0].content.parts.text，finishReason = STOP |
 
 协议依据官方 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)、[Gemini Generate Content](https://ai.google.dev/api/generate-content) 与 [Gemini API Key](https://ai.google.dev/gemini-api/docs/api-key)。Gemini 模型可带 `models/` 前缀，模型名称只允许字母、数字、下划线、点和连字符。
 
 只接受成功 HTTP、严格 UTF-8 外层 JSON 和协议声明位置的纯 JSON 文本。拒绝空内容、拒绝/过滤、截断和工具调用；协议声明的 reasoning/thinking 内容不参与 JSON 解析。不自动重试、修补或切换接口。JSON mode 不能代替本地字段检查，兼容服务需自行支持所选协议和参数。
 
-凭据位于本机用户数据目录 `credentials.json`，内容为稳定 `key-UUID → Key` 的明文映射，原子写入权限 0600。新 Key 创建新引用，旧记录保持有效。配置和 IPC 凭据状态只含引用或存在性，不返回 Key。没有引用才匿名请求，有引用缺失则失败。损坏文件保留字节。`credentials.json` 与 `settings-path.json` 禁止作为设置路径。
+凭据位于本机用户数据目录 `credentials.json`，内容为稳定 `key-UUID → Key` 的明文映射，原子写入权限 0600。新 Key 创建新引用，旧记录保持有效。配置只含引用；IPC 凭据状态返回存在性与掩码（前 5 位与后 4 位，短 Key 只返回省略号），不返回完整 Key；`credential:remove` 按引用删除条目并保留 0600。没有引用才匿名请求，有引用缺失则失败。损坏文件保留字节。`credentials.json` 与 `settings-path.json` 禁止作为设置路径。
 
 ## 文件与资源限制
 

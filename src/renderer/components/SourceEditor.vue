@@ -7,7 +7,7 @@ import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view'
 
 const props = defineProps<{ modelValue: string; dark: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; save: [] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const host = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
@@ -39,7 +39,6 @@ onMounted(() => {
       history(),
       markdown(),
       keymap.of([
-        { key: 'Mod-s', run: () => { emit('save'); return true } },
         ...historyKeymap,
         ...defaultKeymap,
       ]),
