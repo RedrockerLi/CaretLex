@@ -44,8 +44,19 @@ export class ProviderService {
         const adapter = this.adapters.get(profile.type)
         if (!adapter) throw new CaretLexError('UNKNOWN_TYPE', 'provider 类型未注册。')
         if (profile.type === 'LLM') result.examples[profile.name] = (profile.config as Record<string, JsonValue>).responseTemplate
+        const dictionary = snapshot.value.dictionary
+        const context = profile.type === 'LLM' && dictionary.enabled
+          ? {
+              article: article.value,
+              dictionary: {
+                timeoutMs: dictionary.timeoutMs,
+                apiKeyRef: dictionary.apiKeyRef,
+                responseTemplate: dictionary.responseTemplate
+              }
+            }
+          : { article: article.value }
         controller.signal.throwIfAborted()
-        const response = await adapter.fetch({ article: article.value }, profile.config, controller.signal)
+        const response = await adapter.fetch(context, profile.config, controller.signal)
         if (response.ok && (!isJsonValue(response.value) || Buffer.byteLength(JSON.stringify(response.value)) > MAX_JSON_BYTES)) {
           result.issues.push({ code: 'invalid-provider-value', message: 'Provider 返回非 JSON 数据或来源值超过 1 MiB。', sourcePath: profile.name })
         } else if (response.ok) {

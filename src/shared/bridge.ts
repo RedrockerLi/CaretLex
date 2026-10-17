@@ -43,6 +43,7 @@ export interface SourceResult {
   issues: ProviderIssue[]
 }
 export interface ProviderDescription { type: string; defaultConfig: JsonValue; hasPreset: boolean }
+export interface DictionaryCacheStats { entries: number; bytes: number; available: boolean }
 export interface CaretLexBridge {
   onMenuCommand(callback: (command: MenuCommand) => void): () => void
   updateMenuState(state: MenuState): void
@@ -55,6 +56,8 @@ export interface CaretLexBridge {
   saveCredential(key: string): Promise<string>
   credentialStatus(ref?: string): Promise<{ exists: boolean; masked?: string; error?: string }>
   removeCredential(ref: string): Promise<void>
+  dictionaryCacheStats(): Promise<DictionaryCacheStats>
+  clearDictionaryCache(): Promise<DictionaryCacheStats>
   takeStartupDocument(): Promise<DocumentResult | null>
   openMarkdown(): Promise<DocumentResult | null>
   newDocument(): Promise<DocumentResult>

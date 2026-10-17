@@ -7,7 +7,8 @@ import { createLlmAdapter } from '../../src/main/llm'
 import { CredentialRepository } from '../../src/main/credentials'
 import { DocumentRepository, SettingsRepository } from '../../src/main/repositories'
 import { ProviderService } from '../../src/main/providers'
-import { llmType, llmPreset, defaultResponse, providerTypes, type ProviderAdapter } from '../../src/shared/providers'
+import { defaultDictionaryPrompt, defaultDictionaryResponse, llmType, llmPreset, defaultResponse, providerTypes, type ProviderAdapter } from '../../src/shared/providers'
+import type { DictionaryClient, DictionaryLookupResult } from '../../src/main/dictionary'
 import { defaultSettings } from '../../src/shared/settings'
 import { instantiateMapping } from '../../src/shared/mapping'
 import type { JsonValue } from '../../src/shared/types'
@@ -253,6 +254,110 @@ describe('provider orchestration and captured versions', () => {
     const snapshot = await fixture.settings.save({ ...defaultSettings, providers: [{ name: 'chosen', type: 'LLM', enabled: true, config: config('http://localhost') }], saveTemplate: llmPreset('chosen') }, fixture.snapshot.revision)
     const service = new ProviderService(fixture.documents, fixture.settings, new Map([['LLM', { ...llmType, fetch: fetcher }]]))
     expect(await service.fetch({ ...fixture.input, settingsRevision: snapshot.revision })).toMatchObject({ sources: {}, issues: [expect.objectContaining({ code: 'article-unavailable' })] }); expect(fetcher).not.toHaveBeenCalled()
+  })
+  it('passes the global dictionary runtime config only when enabled', async () => {
+    const fixture = await serviceFixture()
+    const fetcher = vi.fn(async () => ({ ok: true as const, value: { lemma: 'go', meaning_in_context: '', english_definition: '', other_meanings: [] }, issues: [] }))
+    const service = new ProviderService(fixture.documents, fixture.settings, new Map([['LLM', { ...llmType, fetch: fetcher }]]))
+    const enabled = await fixture.settings.save({
+      ...defaultSettings,
+      providers: [{ name: 'chosen', type: 'LLM', enabled: true, config: config('http://localhost', { prompt: defaultDictionaryPrompt }) }],
+      saveTemplate: llmPreset('chosen'),
+      dictionary: { ...defaultSettings.dictionary, enabled: true }
+    }, fixture.snapshot.revision)
+    await service.fetch({ ...fixture.input, settingsRevision: enabled.revision })
+    expect(fetcher).toHaveBeenCalledWith(expect.objectContaining({
+      dictionary: { timeoutMs: 10000, responseTemplate: defaultDictionaryResponse }
+    }), expect.anything(), expect.anything())
+    fetcher.mockClear()
+    const disabled = await fixture.settings.save({
+      ...defaultSettings,
+      providers: [{ name: 'chosen', type: 'LLM', enabled: true, config: config('http://localhost') }],
+      saveTemplate: llmPreset('chosen')
+    }, enabled.revision)
+    await service.fetch({ ...fixture.input, requestId: 'disabled-dictionary', settingsRevision: disabled.revision })
+    expect(fetcher).toHaveBeenCalledWith(expect.not.objectContaining({ dictionary: expect.anything() }), expect.anything(), expect.anything())
+  })
+})
+
+describe('dictionary-enriched adapter flow', () => {
+  const enrichedConfig = (baseUrl: string) => config(baseUrl, { prompt: defaultDictionaryPrompt })
+  const contextWithDictionary = {
+    article: context.article,
+    dictionary: { timeoutMs: 1000, apiKeyRef: 'key-11111111-1111-1111-1111-111111111111', responseTemplate: defaultDictionaryResponse }
+  }
+  const lookupResult: DictionaryLookupResult = {
+    ok: true,
+    source: 'cache',
+    issues: [],
+    lookup: {
+      query: 'went',
+      fetchedAt: 1,
+      candidates: [{
+        entryId: 'go:1', lemma: 'go', partOfSpeech: 'verb',
+        senses: [
+          { id: 'go:1#0', definition: 'to move or travel', examples: [] },
+          { id: 'go:1#1', definition: 'to leave', examples: [] }
+        ]
+      }]
+    }
+  }
+  const enrichedAdapter = (client: DictionaryClient) => createLlmAdapter({ fetch: globalThis.fetch, getKey: async () => 'test-key', dictionary: client })
+
+  it('uses dictionary definitions for valid sense IDs and expands the reference', async () => {
+    let prompt = ''
+    const base = await server(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      prompt = body.messages[0].content
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify(outer(JSON.stringify({
+        lemma: 'go', context_sense_id: 'go:1#0', meaning_in_context: '（动词）去', english_definition: '',
+        other_meanings: [{ sense_id: 'go:1#1', meaning: '（动词）离开', english_definition: '', example_sentence: 'She went home.' }]
+      }))))
+    })
+    const result = await enrichedAdapter({ lookup: async () => lookupResult }).fetch(contextWithDictionary, enrichedConfig(base), new AbortController().signal)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value).toEqual({
+      lemma: 'go',
+      meaning_in_context: '（动词）去',
+      english_definition: 'to move or travel',
+      other_meanings: [{ meaning: '（动词）离开', english_definition: 'to leave', example_sentence: 'She went home.' }]
+    })
+    expect(prompt).toContain('"available": true')
+    expect(prompt).toContain('"id": "go:1#0"')
+    expect(prompt).toContain(JSON.stringify(defaultDictionaryResponse, null, 2))
+    expect(prompt).not.toContain('{{dictionary}}')
+    expect(prompt).not.toContain('{{JSON}}')
+  })
+
+  it('falls back to LLM definitions when the dictionary lookup fails', async () => {
+    let prompt = ''
+    const base = await server(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      prompt = body.messages[0].content
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify(outer(JSON.stringify({
+        lemma: 'go', context_sense_id: '', meaning_in_context: '去', english_definition: 'LLM definition',
+        other_meanings: [{ sense_id: '', meaning: '离开', english_definition: 'LLM other', example_sentence: 'She went home.' }]
+      }))))
+    })
+    const result = await enrichedAdapter({ lookup: async () => ({ ok: false, error: { code: 'dictionary-timeout', message: 'timeout' } }) })
+      .fetch(contextWithDictionary, enrichedConfig(base), new AbortController().signal)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value).toMatchObject({
+      lemma: 'go',
+      english_definition: 'LLM definition',
+      other_meanings: [{ meaning: '离开', english_definition: 'LLM other', example_sentence: 'She went home.' }]
+    })
+    expect(result.issues.some(issue => issue.code === 'dictionary-timeout')).toBe(true)
+    expect(prompt).toContain('"available": false')
+    expect(prompt).toContain('"reason": "dictionary-timeout"')
   })
 })
 

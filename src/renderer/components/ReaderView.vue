@@ -5,6 +5,7 @@ import { EntrySession } from '../../shared/entry-session'
 import { referencesSource } from '../../shared/mapping'
 import type { EntryLocation, SaveResult } from '../../shared/bridge'
 import { mapVisibleRange, getAdjacentVocabularyReference } from '../../shared/protocol'
+import { buildQuickAddEntry, referenceInsertLength, shiftJobSpans, type QuickAddJob } from '../../shared/quick-add'
 import EntryComposer from './EntryComposer.vue'
 import VocabCard from './VocabCard.vue'
 import CodeBlock from './CodeBlock.vue'
@@ -51,6 +52,12 @@ const selectedContext = ref<SelectionContext | null>(null)
 const selectionError = ref('')
 const composerOpen = ref(false)
 const session = shallowRef<EntrySession>()
+const quickJobs = shallowRef<QuickAddJob[]>([])
+const quickNotice = ref('')
+const inFlightRequests = new Map<string, string>()
+const removalTimers = new Set<number>()
+let lastKnownRevision: string | undefined
+let draining = false
 const cardEditing = ref(false)
 const hoverSentence = ref<string>()
 const hoverArticleError = ref('')
@@ -75,6 +82,7 @@ const entries = computed(() => parsed.value.entries)
 const tree = computed(() => parsed.value.tree as unknown as AstNode)
 const hoveredEntry = computed(() => hoverLemma.value ? entries.value.get(hoverLemma.value) ?? capturedHover.value ?? null : null)
 const hasBlockingDiagnostics = computed(() => !parsed.value.writable || !!props.tab.document.error)
+const quickAdd = computed(() => props.settings.quickAdd === true)
 const diagnostics = computed(() => parsed.value.diagnostics)
 const orphanReferences = computed(() => {
   const found: string[] = []
@@ -281,6 +289,126 @@ async function onComposerSubmit() {
     if (session.value === current) { closeComposer(); window.getSelection()?.removeAllRanges() }
   } catch (error) { current.error = error instanceof Error ? error.message : '保存失败，草稿保留。' }
   finally { current.saving = false }
+}
+function jobById(id: string) { return quickJobs.value.find(job => job.id === id) }
+function updateJob(id: string, patch: Partial<QuickAddJob>) {
+  quickJobs.value = quickJobs.value.map(job => job.id === id ? { ...job, ...patch } : job)
+}
+function dropJob(id: string) { quickJobs.value = quickJobs.value.filter(job => job.id !== id) }
+function quickMessage(error: unknown) { return error instanceof Error ? error.message : String(error) }
+function hasAutoSource() {
+  return props.settings.providers.some(profile => profile.enabled && referencesSource(props.settings.saveTemplate, profile.name))
+}
+function quickJobLabel(job: QuickAddJob) {
+  const reason = job.notice ? ` — ${job.notice}` : ''
+  if (job.state === 'queued') return `等待获取：${job.location.selected}`
+  if (job.state === 'fetching') return `正在获取：${job.location.selected}`
+  if (job.state === 'saving') return `正在写入：${job.lemma}${reason}`
+  if (job.state === 'saved') return `${job.usedSources ? `已保存：${job.lemma}` : `已保存（无自动释义）：${job.lemma}`}${reason}`
+  return `保存失败：${job.lemma} — ${job.failure ?? '未知原因'}`
+}
+function cancelQuickRequests() {
+  for (const requestId of inFlightRequests.values()) void window.caretlex.cancelProvider(requestId).catch(() => undefined)
+  inFlightRequests.clear()
+}
+function scheduleJobRemoval(id: string) {
+  const timer = window.setTimeout(() => { removalTimers.delete(timer); dropJob(id) }, 6000)
+  removalTimers.add(timer)
+}
+async function runQuickRequest(id: string) {
+  const job = jobById(id)
+  if (!job) return
+  const requestId = crypto.randomUUID()
+  inFlightRequests.set(id, requestId)
+  try {
+    const result = await window.caretlex.fetchSources(cloneJson({ ...job.location, requestId, settingsRevision: props.settingsRevision }))
+    if (!jobById(id)) return
+    // 没有取得来源数据时，用 provider 的诊断说明为什么写成空释义。
+    const fetched = Object.keys(result.sources).some(name => name !== 'article')
+    const issue = result.issues.find(item => item.sourcePath) ?? result.issues[0]
+    updateJob(id, { result, notice: fetched ? undefined : issue?.message ?? '未取得来源数据。' })
+  } catch (error) {
+    if (jobById(id)) updateJob(id, { notice: quickMessage(error) })
+  } finally { inFlightRequests.delete(id) }
+}
+async function startQuickAdd() {
+  inspectSelection()
+  const context = selectedContext.value
+  if (!context || hasBlockingDiagnostics.value || !props.settingsAvailable) return
+  if (!props.tab.document.snapshot.path) { quickNotice.value = '文档尚未保存到磁盘；请先保存后再存词。'; return }
+  const location: EntryLocation = { ...context, sourceSpan: { ...context.sourceSpan } }
+  const adjacent = getAdjacentVocabularyReference(parsed.value, location.sourceSpan)
+  const bound = adjacent?.label?.match(/^w-([a-z]+(?:['-][a-z]+)*)$/)?.[1]
+  const job: QuickAddJob = {
+    id: crypto.randomUUID(), location, boundLemma: bound, lemma: bound ?? location.selected.toLowerCase(), state: 'queued', usedSources: false
+  }
+  if (!quickJobs.value.length) lastKnownRevision = props.tab.document.snapshot.revision
+  quickJobs.value = [...quickJobs.value, job]
+  quickNotice.value = ''
+  // 同一个词形不重复入队：清掉选区，用户继续阅读。
+  window.getSelection()?.removeAllRanges()
+  selectedContext.value = null
+  selectionAnchor.value = null
+  await drainQuickAdd()
+}
+async function drainQuickAdd() {
+  if (draining) return
+  draining = true
+  try {
+    for (;;) {
+      const next = quickJobs.value.find(job => job.state === 'queued')
+      if (!next) return
+      // 同步比较：本次队列自身的写入已记入 lastKnownRevision，其余变化说明文档被外部改动。
+      if (props.tab.document.snapshot.revision !== lastKnownRevision) {
+        quickJobs.value = []
+        quickNotice.value = '文档版本已变化；未写入的快速添加已取消，请重新选词。'
+        return
+      }
+      // 一次只处理一个任务：主进程在文档变化时取消该文档的全部在飞请求，
+      // 并发获取会被同队列上一次写入取消。写入 revision 在出队时刷新，
+      // 入队时捕获的版本早于同队列更早的写入。
+      const location: EntryLocation = { ...next.location, baseRevision: props.tab.document.snapshot.revision }
+      updateJob(next.id, { state: 'fetching', location })
+      let notice = ''
+      try {
+        const article = await window.caretlex.getArticle(location)
+        if (!jobById(next.id)) continue
+        if (article.ok) updateJob(next.id, { article: article.value })
+        else notice = article.error.message
+      } catch (error) { notice = quickMessage(error) }
+      if (!jobById(next.id)) continue
+      if (notice) updateJob(next.id, { notice })
+      else if (hasAutoSource()) await runQuickRequest(next.id)
+      const job = jobById(next.id)
+      if (!job) continue
+      const built = buildQuickAddEntry(job, props.settings, props.settingsRevision, new Map(entries.value))
+      if (!built.ok) { updateJob(job.id, { state: 'failed', failure: built.error.message }); continue }
+      updateJob(job.id, { state: 'saving' })
+      // planAdd 只在选区后没有同词条引用时才插入标记，插入长度决定后续排队任务的范围平移。
+      const inserted = !getAdjacentVocabularyReference(parsed.value, location.sourceSpan)
+      try {
+        const result = await props.onSaveEntry(location, built.value.lemma, built.value.value)
+        lastKnownRevision = result.snapshot.revision
+        if (result.changed && inserted) quickJobs.value = shiftJobSpans(quickJobs.value, job.id, location.sourceSpan.end, referenceInsertLength(built.value.lemma))
+        updateJob(job.id, { state: 'saved', lemma: built.value.lemma, usedSources: built.value.usedSources, failure: undefined })
+        scheduleJobRemoval(job.id)
+      } catch (error) {
+        updateJob(job.id, { state: 'failed', failure: quickMessage(error) })
+      }
+    }
+  } finally { draining = false }
+}
+function openQuickJob(id: string) {
+  const job = jobById(id)
+  if (!job) return
+  const location: EntryLocation = { ...job.location, baseRevision: props.tab.document.snapshot.revision }
+  const current = shallowReactive(new EntrySession(location, props.settings, props.settingsRevision, new Map(entries.value), job.boundLemma)) as EntrySession
+  if (job.article) current.setArticle(job.article)
+  if (job.result) { current.startRequest(job.result.requestId); current.receive(job.result) }
+  current.error = job.failure ?? ''
+  session.value = current
+  composerOpen.value = true
+  dropJob(id)
 }
 async function deleteHovered() {
   const lemma = hoveredEntry.value?.lemma
@@ -547,7 +675,7 @@ function renderDocument(): VNodeChild[] {
 
 const MarkdownBody = defineComponent(() => () => h('div', { class: 'markdown-content' }, renderDocument()))
 
-watch(() => composerOpen.value || cardEditing.value, value => emit('unsaved', value))
+watch(() => composerOpen.value || cardEditing.value || quickJobs.value.length > 0, value => emit('unsaved', value))
 watch(() => props.tab.document.snapshot.revision, () => {
   selectedContext.value = null
   selectionAnchor.value = null
@@ -555,18 +683,28 @@ watch(() => props.tab.document.snapshot.revision, () => {
   if (!cardEditing.value) hoverLemma.value = ''
   ++hoverRequest
 })
-watch(() => props.tab.document.error, error => { if (error && session.value) { cancelRequest(); session.value.invalidate(error) } })
+watch(() => props.tab.document.error, error => {
+  if (!error) return
+  if (session.value) { cancelRequest(); session.value.invalidate(error) }
+  cancelQuickRequests(); quickJobs.value = []
+})
 watch(() => props.settingsRevision, () => {
   cancelRequest()
   if (session.value) {
     if (props.settingsAvailable) session.value.replaceSettings(props.settings, props.settingsRevision)
     else session.value.error = '设置不可用；自动获取已取消，手改稿仍可保存。'
   }
+  // 在飞请求按旧保存配置发起，主进程也会以 SETTINGS_CONFLICT 拒绝，直接取消并退回本地 article。
+  cancelQuickRequests()
+  void drainQuickAdd()
 })
 watch(() => props.active, active => { if (!active) { cancelRequest(); ++hoverRequest } })
 onMounted(() => { window.addEventListener('resize', scheduleAnchorRefresh) })
 onBeforeUnmount(() => {
-  cancelRequest(); ++hoverRequest; emit('unsaved', false)
+  cancelRequest(); cancelQuickRequests(); ++hoverRequest; emit('unsaved', false)
+  for (const timer of removalTimers) window.clearTimeout(timer)
+  removalTimers.clear()
+  quickJobs.value = []
   window.removeEventListener('resize', scheduleAnchorRefresh)
   anchorObserver?.disconnect()
   if (anchorFrame !== undefined) window.cancelAnimationFrame(anchorFrame)
@@ -594,7 +732,16 @@ onBeforeUnmount(() => {
     <div v-if="selectionError" class="selection-message" role="status">{{ selectionError }}</div>
     <div v-if="selectedContext && !composerOpen" ref="toolbarElement" class="selection-toolbar" :style="toolbarStyle">
       <span>已选：{{ selectedContext.selected }}</span>
-      <button class="button button-primary button-small" type="button" :disabled="hasBlockingDiagnostics || !settingsAvailable" @mousedown.prevent="startComposer">存为词条</button>
+      <button class="button button-primary button-small" type="button" :disabled="hasBlockingDiagnostics || !settingsAvailable" @mousedown.prevent="quickAdd ? startQuickAdd() : startComposer()">{{ quickAdd ? '快速添加' : '存为词条' }}</button>
+    </div>
+
+    <div v-if="quickNotice || quickJobs.length" class="quick-status" role="status">
+      <p v-if="quickNotice" class="quick-status-row quick-status-notice"><span>{{ quickNotice }}</span><button class="text-button" type="button" @click="quickNotice = ''">关闭</button></p>
+      <p v-for="job in quickJobs" :key="job.id" class="quick-status-row" :class="{ 'error-text': job.state === 'failed' }">
+        <span>{{ quickJobLabel(job) }}</span>
+        <button v-if="job.state === 'failed'" class="text-button" type="button" @click="openQuickJob(job.id)">打开录入窗</button>
+        <button v-if="job.state === 'failed'" class="text-button" type="button" @click="dropJob(job.id)">忽略</button>
+      </p>
     </div>
 
     <div v-if="composerOpen && session" ref="panelElement" class="floating-panel" :style="panelStyle">

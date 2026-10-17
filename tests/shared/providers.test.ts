@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, parseSettings, renameProfile } from '../../src/shared/settings'
-import { llmPreset, llmType, checkResponse, defaultPrompt, defaultResponse, isDefaultSaveStructure, legacyDefaultPrompt, presetCompatibility, type ProviderType } from '../../src/shared/providers'
+import { llmPreset, llmType, checkResponse, defaultDictionaryPrompt, defaultDictionaryResponse, defaultPrompt, defaultResponse, dictionaryPresetCompatibility, isDefaultSaveStructure, legacyDefaultPrompt, presetCompatibility, type ProviderType } from '../../src/shared/providers'
 import { instantiateMapping, referencesSource, validateMappingTemplate } from '../../src/shared/mapping'
 import { locateContext, mergeEntry } from '../../src/shared/entries'
 import { planAdd, planEdit } from '../../src/shared/patch'
@@ -70,6 +70,59 @@ describe('provider configuration and presets', () => {
   it('validates a registered future type with the same profile interface', () => {
     const type: ProviderType = { type: 'test', defaultConfig: () => null, validateConfig: () => ({ ok: true, value: null }), createSavePreset: name => ({ field: `${name}.field` }) }
     expect(parseSettings(JSON.stringify({ ...defaultSettings, providers: [{ name: 'source', type: 'test', enabled: true, config: null }] }), new Map([['test', type]])).ok).toBe(true)
+  })
+})
+
+describe('dictionary settings', () => {
+  const enabled = { ...defaultSettings.dictionary, enabled: true }
+  const llm = (patch: Record<string, JsonValue> = {}) => ({ ...profile(), config: { ...profile().config as Record<string, JsonValue>, ...patch } })
+  it('normalizes a missing dictionary field for old settings files', () => {
+    const legacy = { ...defaultSettings } as unknown as Record<string, JsonValue>
+    delete legacy.dictionary
+    const parsed = parseSettings(JSON.stringify(legacy))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.value.dictionary).toEqual(defaultSettings.dictionary)
+  })
+  it.each([
+    null, [], { enabled: 'yes' }, { timeoutMs: 0 }, { timeoutMs: 1.2 }, { timeoutMs: 2147483648 },
+    { apiKeyRef: 'bad' }, { unknown: true }, { responseTemplate: [] }, { responseTemplate: { lemma: '' } }
+  ])('rejects an invalid dictionary object %j', dictionary => {
+    expect(parseSettings(JSON.stringify({ ...defaultSettings, dictionary })).ok).toBe(false)
+  })
+  it('accepts an enabled dictionary with a compatible prompt and response template', () => {
+    const value = { ...defaultSettings, providers: [llm({ prompt: defaultDictionaryPrompt })], dictionary: enabled, saveTemplate: llmPreset('ai_main') }
+    const parsed = parseSettings(JSON.stringify(value))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect((parsed.value.providers[0].config as Record<string, JsonValue>).prompt).toBe(defaultDictionaryPrompt)
+  })
+  it('upgrades the untouched default prompt when the dictionary is enabled', () => {
+    const parsed = parseSettings(JSON.stringify({ ...defaultSettings, providers: [llm()], dictionary: enabled }))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect((parsed.value.providers[0].config as Record<string, JsonValue>).prompt).toBe(defaultDictionaryPrompt)
+  })
+  it('restores the normal default prompt when the dictionary is disabled', () => {
+    const parsed = parseSettings(JSON.stringify({ ...defaultSettings, providers: [llm({ prompt: defaultDictionaryPrompt })] }))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect((parsed.value.providers[0].config as Record<string, JsonValue>).prompt).toBe(defaultPrompt)
+  })
+  it('rejects a custom prompt without the dictionary variable when enabled', () => {
+    expect(parseSettings(JSON.stringify({ ...defaultSettings, providers: [llm({ prompt: 'Write JSON: {{JSON}}' })], dictionary: enabled })))
+      .toMatchObject({ ok: false, error: { code: 'dictionary-prompt-missing' } })
+  })
+  it('rejects a response template that cannot feed the default save mapping', () => {
+    expect(parseSettings(JSON.stringify({ ...defaultSettings, providers: [llm({ prompt: defaultDictionaryPrompt, responseTemplate: { lemma: '' } })], dictionary: enabled })))
+      .toMatchObject({ ok: false, error: { code: 'dictionary-response-template-incompatible' } })
+  })
+  it('rejects a custom prompt with the dictionary variable when disabled', () => {
+    expect(parseSettings(JSON.stringify({ ...defaultSettings, providers: [llm({ prompt: 'Custom {{dictionary}} {{JSON}}' })] })))
+      .toMatchObject({ ok: false, error: { code: 'dictionary-prompt-unexpected' } })
+  })
+  it('validates the enriched response example shape', () => {
+    const example = defaultDictionaryResponse as Record<string, JsonValue>
+    expect(dictionaryPresetCompatibility(defaultDictionaryResponse)).toBeUndefined()
+    expect(dictionaryPresetCompatibility({ ...example, extra: '' })).toBeUndefined()
+    expect(dictionaryPresetCompatibility({ lemma: '' })).toBeDefined()
+    expect(dictionaryPresetCompatibility({ ...example, other_meanings: [] })).toBeDefined()
   })
 })
 

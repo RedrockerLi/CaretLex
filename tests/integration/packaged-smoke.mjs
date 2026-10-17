@@ -66,7 +66,7 @@ const api = createHttpServer(async (request, response) => {
   const protocol = request.url.endsWith('/responses') ? 'openai-responses' : request.url.endsWith('/messages') ? 'anthropic-messages' : request.url.includes(':generateContent') ? 'gemini' : 'openai-chat'
   const prompt = protocol === 'openai-responses' ? body.input : protocol === 'anthropic-messages' ? body.messages[0].content : protocol === 'gemini' ? body.contents[0].parts[0].text : body.messages[0].content
   const word = /Word: ([^\n]+)/.exec(prompt)?.[1]
-  const lemma = word === 'went' ? 'go' : word === 'walked' ? 'walk' : word === 'returned' ? 'return' : 'bank'
+  const lemma = word === 'went' ? 'go' : word === 'walked' ? 'walk' : word === 'returned' ? 'return' : word === 'again' ? 'again' : 'bank'
   const meaning = prompt.includes('river [bank]') ? '（名词）河岸' : lemma === 'bank' ? '（名词）银行' : '（动词）去'
   const value = { lemma, meaning_in_context: meaning, english_definition: meaning.includes('河岸') ? 'land beside a river' : 'financial institution', other_meanings: [0, 1, 2].map(index => ({ meaning: `（动词）其他义${index}`, english_definition: `definition ${index}`, example_sentence: `Example ${index}.` })) }
   const content = JSON.stringify(value)
@@ -373,13 +373,14 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-field=apiType]').options.length"), 4)
   assert.equal(await evaluate("document.querySelector('.settings-page').scrollWidth <= document.querySelector('.settings-page').clientWidth"), true)
   assert.ok(await evaluate("document.querySelector('[data-field=prompt]').clientHeight >= 220 && document.querySelector('[data-field=responseTemplate]').clientHeight >= 220"))
+  assert.equal(await evaluate("!!document.querySelector('[data-field=dictionary-enabled]') && !!document.querySelector('[data-field=dictionary-clear-cache]') && !!document.querySelector('[data-field=dictionary-responseTemplate]')"), true, 'The dictionary enhancement card renders')
   await screenshot('/tmp/caretlex-settings.png')
-  await evaluate("document.querySelector('.settings-editors').scrollIntoView({block:'center'})")
+  await evaluate("document.querySelector('.provider-fields .settings-editors').scrollIntoView({block:'center'})")
   await screenshot('/tmp/caretlex-settings-editors.png')
   await send('Emulation.setDeviceMetricsOverride', { width: 680, height: 850, deviceScaleFactor: 1, mobile: false })
   await evaluate("document.querySelector('.settings-overlay').scrollTop = 0")
   assert.equal(await evaluate("document.querySelector('.settings-page').scrollWidth <= document.querySelector('.settings-page').clientWidth"), true)
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.settings-editors')).gridTemplateColumns.split(' ').length"), 1)
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.provider-fields .settings-editors')).gridTemplateColumns.split(' ').length"), 1)
   await delay(100)
   await writeFile('/tmp/caretlex-settings-compact.png', Buffer.from((await send('Page.captureScreenshot')).data, 'base64'))
   await send('Emulation.clearDeviceMetricsOverride')
@@ -529,6 +530,31 @@ try {
     await closeComposer()
   }
 
+  // Background quick add writes without the composer, so reading continues.
+  await clickText('.toolbar-button', '设置')
+  await evaluate("document.querySelector('#settings-quick-add').click()")
+  await clickText('.settings-page button', '保存设置')
+  await waitUi("!document.querySelector('.settings-dirty-label')", 'saving the quick add setting')
+  assert.equal((await evaluate('window.caretlex.loadSettings()')).value.quickAdd, true)
+  await evaluate("document.querySelector('[aria-label=\"关闭设置\"]').click()")
+  await selectVisibleWord(0, 'again')
+  assert.equal(await evaluate("document.querySelector('.selection-toolbar button').textContent"), '快速添加')
+  await evaluate("document.querySelector('.selection-toolbar button').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))")
+  await waitUi("document.querySelector('.quick-status')?.innerText.includes('正在获取：again') === true", 'the background acquisition')
+  assert.equal(await evaluate("!!document.querySelector('.entry-composer')"), false, 'the background path never opens the composer')
+  current = await waitForFile(text => text.includes('again[^w-again]'), 'a background write')
+  await waitUi("document.querySelector('.quick-status')?.innerText.includes('已保存：again') === true", 'the background receipt')
+  assert.equal(entryFrom(current, 'again').lemma, 'again')
+  assert.equal(entryFrom(current, 'again').contexts[0].original_sentence, 'She went [again].')
+  assert.equal(entryFrom(current, 'again').contexts[0].meaning_in_context, '（动词）去')
+  await screenshot('/tmp/caretlex-quick-add.png')
+  await clickText('.toolbar-button', '设置')
+  await evaluate("document.querySelector('#settings-quick-add').click()")
+  await clickText('.settings-page button', '保存设置')
+  await waitUi("!document.querySelector('.settings-dirty-label')", 'restoring the composer default')
+  assert.equal((await evaluate('window.caretlex.loadSettings()')).value.quickAdd, false)
+  await evaluate("document.querySelector('[aria-label=\"关闭设置\"]').click()")
+
   // The real GTK save chooser changes the settings path; credentials stay local.
   const syncDirectory = join(root, 'sync'); await mkdir(syncDirectory)
   const targetPath = join(syncDirectory, 'settings.json')
@@ -545,7 +571,7 @@ try {
   await evaluate("document.querySelector('[aria-label=\"关闭设置\"]').click()")
 
   await stopApp(); startApp(); await connect()
-  await waitUi("document.readyState === 'complete' && document.querySelectorAll('.vocab-anchor').length === 6", 'reopening persisted contexts and references')
+  await waitUi("document.readyState === 'complete' && document.querySelectorAll('.vocab-anchor').length === 7", 'reopening persisted contexts and references')
   assert.equal(await readFile(filePath, 'utf8'), current)
   const reopened = await evaluate('window.caretlex.loadSettings()')
   assert.equal(reopened.path, targetPath)

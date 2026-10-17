@@ -311,7 +311,7 @@ onBeforeUnmount(() => {
     <div v-if="pendingAction" class="modal-backdrop" role="presentation">
       <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="pending-title">
         <h2 id="pending-title">{{ pendingAction.kind === 'close-window' ? '关闭窗口？' : pendingAction.kind === 'close-tab' ? '关闭标签页？' : '切回阅读模式？' }}</h2>
-        <p v-if="pendingEntryDraft">词条、设置或凭据有未保存草稿。返回编辑界面检查并保存，或放弃草稿继续关闭。</p>
+        <p v-if="pendingEntryDraft">词条、设置或凭据有未保存草稿，或仍有正在获取、写入的词条。返回编辑界面检查并保存，或放弃草稿继续关闭。</p>
         <p v-else>{{ pendingAction.kind === 'close-window' && workspace.settingsDirty ? '文档或设置中有未保存的修改。保存后继续、放弃修改，或取消关闭。' : '源码中有未保存的修改。保存后继续、放弃修改，或取消当前操作。' }}</p>
         <div class="dialog-actions">
           <button class="button button-secondary" type="button" @click="handlePending('cancel')">取消</button>

@@ -4,7 +4,8 @@ import { isJsonValue, cloneJson } from './json'
 export interface ArticleData { original_word: string; original_sentence: string }
 export interface ProviderIssue { code: string; message: string; sourcePath?: string }
 export type ProviderResult = { ok: true; value: JsonValue; issues: ProviderIssue[] } | { ok: false; error: ProviderIssue }
-export interface ProviderContext { article: ArticleData }
+export interface DictionaryRuntimeConfig { timeoutMs: number; apiKeyRef?: string; responseTemplate: JsonValue }
+export interface ProviderContext { article: ArticleData; dictionary?: DictionaryRuntimeConfig }
 export interface ProviderType {
   type: string
   defaultConfig(): JsonValue
@@ -30,11 +31,29 @@ export const defaultResponse: JsonValue = {
   lemma: '', meaning_in_context: '', english_definition: '',
   other_meanings: [{ meaning: '', english_definition: '', example_sentence: '' }]
 }
+export const defaultDictionaryResponse: JsonValue = {
+  lemma: '', context_sense_id: '', meaning_in_context: '', english_definition: '',
+  other_meanings: [{ sense_id: '', meaning: '', english_definition: '', example_sentence: '' }]
+}
 export const defaultPrompt = `Explain only the marked occurrence in the sentence. Provide its dictionary lemma.
 Use “（词性）中文翻译” for meaning_in_context and other_meanings[].meaning.
 Use English for english_definition and example_sentence. Give other meanings as appropriate; an empty list is allowed.
 Word: {{article.original_word}}
 Sentence: {{article.original_sentence}}
+Return only valid JSON matching the following response example. No Markdown fences or explanations. Array lengths may vary.
+Response JSON example:
+{{JSON}}`
+export const defaultDictionaryPrompt = `Explain only the marked occurrence in the sentence.
+A reference from Merriam-Webster's Learner's Dictionary is provided below.
+Choose the lemma and the sense IDs that fit the sentence.
+Use “（词性）中文翻译” for meaning_in_context and other_meanings[].meaning.
+When a sense_id is valid, use that sense's dictionary definition for english_definition.
+When the reference is unavailable or no sense_id applies, write a concise English definition yourself.
+Write an English example_sentence for each other meaning. Do not copy dictionary examples.
+Word: {{article.original_word}}
+Sentence: {{article.original_sentence}}
+Dictionary reference:
+{{dictionary}}
 Return only valid JSON matching the following response example. No Markdown fences or explanations. Array lengths may vary.
 Response JSON example:
 {{JSON}}`
@@ -108,7 +127,7 @@ export const llmType: ProviderType = {
     if (config.jsonMode && !protocol.jsonMode) return fail('Anthropic Messages 不支持 json_object 模式，请关闭 JSON mode；JSON 内容仍按响应示例检查。')
     if (!Number.isInteger(config.maxOutputTokens) || Number(config.maxOutputTokens) < 1 || Number(config.maxOutputTokens) > 2147483647) return fail('maxOutputTokens 必须为 1–2147483647 的整数。')
     const variables = config.prompt.match(/{{[^{}]*}}/g) ?? []
-    if (variables.some(variable => !['{{article.original_word}}', '{{article.original_sentence}}', '{{JSON}}'].includes(variable)) || /{{|}}/.test(config.prompt.replace(/{{[^{}]*}}/g, ''))) return fail('prompt 含有不支持的变量。')
+    if (variables.some(variable => !['{{article.original_word}}', '{{article.original_sentence}}', '{{JSON}}', '{{dictionary}}'].includes(variable)) || /{{|}}/.test(config.prompt.replace(/{{[^{}]*}}/g, ''))) return fail('prompt 含有不支持的变量。')
     if (!Number.isInteger(config.timeoutMs) || Number(config.timeoutMs) <= 0 || Number(config.timeoutMs) > 2147483647) return fail('timeoutMs 必须为 1–2147483647 的整数。')
     if (!Object.hasOwn(config, 'responseTemplate')) return fail('必须提供响应 JSON 示例。')
     const checked = validateExample(config.responseTemplate)
@@ -119,15 +138,18 @@ export const llmType: ProviderType = {
   }
 }
 export const providerTypes = new Map<string, ProviderType>([['LLM', llmType]])
+function exampleCompatibility(actual: JsonValue | undefined, required: JsonValue): boolean {
+  if (actual === undefined || jsonKind(actual) !== jsonKind(required)) return false
+  if (Array.isArray(required) && required.length) return Array.isArray(actual) && actual.length > 0 && exampleCompatibility(actual[0], required[0])
+  if (required && typeof required === 'object' && !Array.isArray(required)) return !!actual && typeof actual === 'object' && !Array.isArray(actual) && Object.entries(required).every(([key, value]) => exampleCompatibility(Object.hasOwn(actual, key) ? actual[key] : undefined, value))
+  return true
+}
 export function presetCompatibility(config: JsonValue): string | undefined {
   if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'responseTemplate')) return '响应示例不可用。'
-  const compare = (actual: JsonValue | undefined, required: JsonValue): boolean => {
-    if (actual === undefined || jsonKind(actual) !== jsonKind(required)) return false
-    if (Array.isArray(required) && required.length) return Array.isArray(actual) && actual.length > 0 && compare(actual[0], required[0])
-    if (required && typeof required === 'object' && !Array.isArray(required)) return !!actual && typeof actual === 'object' && !Array.isArray(actual) && Object.entries(required).every(([key, value]) => compare(Object.hasOwn(actual, key) ? actual[key] : undefined, value))
-    return true
-  }
-  return compare(config.responseTemplate, defaultResponse) ? undefined : '响应示例缺少默认预设要求的字段、类型或数组元素结构。'
+  return exampleCompatibility(config.responseTemplate, defaultResponse) ? undefined : '响应示例缺少默认预设要求的字段、类型或数组元素结构。'
+}
+export function dictionaryPresetCompatibility(responseTemplate: JsonValue): string | undefined {
+  return exampleCompatibility(responseTemplate, defaultDictionaryResponse) ? undefined : '词典增强响应示例缺少必要字段、类型或数组元素结构。'
 }
 export function isDefaultSaveStructure(value: JsonValue): boolean {
   const keys = (item: JsonValue, wanted: string[]) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).sort().join(',') === wanted.sort().join(',')

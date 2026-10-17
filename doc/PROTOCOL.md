@@ -37,6 +37,18 @@ article 包含 `original_word` 与 `original_sentence`。原词保留真实大�
 ```json
 {
   "theme": "system",
+  "quickAdd": false,
+  "dictionary": {
+    "enabled": false,
+    "timeoutMs": 10000,
+    "responseTemplate": {
+      "lemma": "",
+      "context_sense_id": "",
+      "meaning_in_context": "",
+      "english_definition": "",
+      "other_meanings": [{"sense_id": "", "meaning": "", "english_definition": "", "example_sentence": ""}]
+    }
+  },
   "providers": [],
   "saveTemplate": {
     "lemma": "",
@@ -48,9 +60,13 @@ article 包含 `original_word` 与 `original_sentence`。原词保留真实大�
 
 provider 实例为 `{name, type, enabled, config}`。name 为区分大小写的 `[A-Za-z_][A-Za-z0-9_-]*`，必须唯一，article 保留。type 必须注册；最多一个实例启用。手动填写是编辑流程，不是 provider。
 
+`quickAdd` 为布尔值，缺省 `false`；为 `true` 时选词保存走后台写入，不打开录入窗。缺省字段在下次保存设置时补全。
+
+`dictionary` 为全局词典增强配置，缺省时规范化为默认值；只允许 `enabled`、`apiKeyRef`、`timeoutMs` 和 `responseTemplate`。`enabled` 为布尔值，缺省 `false`；`timeoutMs` 为 1–2147483647 的整数，缺省 10000；`apiKeyRef` 可选且必须匹配 `key-UUID`；`responseTemplate` 缺省为词典增强响应示例，必须包含 `lemma`、`context_sense_id`、`meaning_in_context`、`english_definition` 和 `other_meanings[]`（`sense_id`、`meaning`、`english_definition`、`example_sentence`）。
+
 `LLM` config 包含 `apiType`、`baseUrl`、`model`、可选 `apiKeyRef`、`prompt`、`responseTemplate`、`jsonMode`、`timeoutMs` 和 `maxOutputTokens`。默认 API 类型为 `openai-chat`，地址、模型为空，JSON mode 关闭，超时 60000 ms，最大输出 tokens 为 4096。停用配置可未填写完整地址/模型；启用需合法 HTTP/HTTPS 基础地址与非空模型。timeoutMs 和 maxOutputTokens 为 1–2147483647 的整数。Base URL 不含用户认证、查询或片段。
 
-prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 与 `{{JSON}}`。`{{JSON}}` 展开为当前实例 responseTemplate 的 JSON 文本，使用两空格缩进；默认 prompt 包含此变量与纯 JSON 输出要求，且默认 prompt 是设置页展示、可直接编辑的全部发送内容。所有变量均一次字面替换，不递归求值；请求不附加隐藏指令。加载时与旧默认文本完全一致的 prompt 升级为新默认，用户改过的内容保持原样。不支持的变量报错。响应示例声明对象必有字段及其类型；额外字段允许，数组样例声明统一元素结构，长度不限。空数组不声明元素内部格式，null 只声明 null 类型。检查不验证语义。
+prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}`、`{{JSON}}` 与 `{{dictionary}}`。`{{JSON}}` 展开为当前实例 responseTemplate 的 JSON 文本；词典增强启用时展开 `dictionary.responseTemplate`。`{{dictionary}}` 展开为归一化词典参考 JSON，只允许在词典增强启用时使用。默认 prompt 包含纯 JSON 输出要求，且默认 prompt 是设置页展示、可直接编辑的全部发送内容。所有变量均一次字面替换，不递归求值；请求不附加隐藏指令。加载时与旧默认文本完全一致的 prompt 升级为新默认，未修改的普通默认 prompt 在词典增强启用时规范化为词典增强默认 prompt，未修改的词典增强默认 prompt 在停用时恢复普通默认；用户改过的内容保持原样。不支持的变量报错。响应示例声明对象必有字段及其类型；额外字段允许，数组样例声明统一元素结构，长度不限。空数组不声明元素内部格式，null 只声明 null 类型。检查不验证语义。
 
 普通设置快照包含路径、原始文本、原始字节 revision、可选已解析值、错误和恢复 token。可解码的非法文件可按原始 revision 重写；普通保存拒绝无法安全解码或超限的原文件。用户点击“恢复默认设置”时，主进程校验绑定当前文件与路径指针字节的 token 后原子写入默认配置；该显式操作可以替换无法解析、无法解码或超限的配置。损坏的路径指针恢复为本机默认设置路径。冲突不覆盖，凭据文件保留。
 
@@ -88,6 +104,34 @@ API 类型决定协议，基础路径保留，尾部 `/` 去除后追加表中�
 只接受成功 HTTP、严格 UTF-8 外层 JSON 和协议声明位置的纯 JSON 文本。拒绝空内容、拒绝/过滤、截断和工具调用；协议声明的 reasoning/thinking 内容不参与 JSON 解析。不自动重试、修补或切换接口。JSON mode 不能代替本地字段检查，兼容服务需自行支持所选协议和参数。
 
 凭据位于本机用户数据目录 `credentials.json`，内容为稳定 `key-UUID → Key` 的明文映射，原子写入权限 0600。新 Key 创建新引用，旧记录保持有效。配置只含引用；IPC 凭据状态返回存在性与掩码（前 5 位与后 4 位，短 Key 只返回省略号），不返回完整 Key；`credential:remove` 按引用删除条目并保留 0600。没有引用才匿名请求，有引用缺失则失败。损坏文件保留字节。`credentials.json` 与 `settings-path.json` 禁止作为设置路径。
+
+## 词典增强
+
+词典配置为全局 `dictionary`。启用且存在已启用的 LLM 实例时，已启用实例的 prompt 必须包含 `{{dictionary}}`，其 `responseTemplate` 必须通过默认保存预设兼容检查（包含 `defaultResponse` 的默认字段）。`dictionary.responseTemplate` 是发给 LLM 的精简响应示例；未修改的普通默认 prompt 在启用时规范化为词典增强默认 prompt，未修改的词典增强默认 prompt 在停用时恢复普通默认。自定义 prompt 不自动改写，缺少或包含 `{{dictionary}}` 时按启用状态报错。
+
+`{{dictionary}}` 展开为归一化参考 JSON：`available`、`word` 和 `candidates[]`；每个 candidate 含 `lemma`、可选 `part_of_speech` 和 `senses[]`，每个 sense 含 `id`、`definition` 和可选 `examples`。词典不可用时为 `available:false`、`word` 和 `reason`。
+
+请求为 `GET https://www.dictionaryapi.com/api/v3/references/learners/json/{word}?key={key}`，key 从本机凭据引用读取，使用 `redirect: error`、独立超时、1 MiB 响应上限和严格 UTF-8 JSON；不自动重试。错误消息不包含完整 URL 或 Key。
+
+缓存位于本机用户数据目录 `dictionary.sqlite`：
+
+```sql
+CREATE TABLE lookups (
+  query TEXT NOT NULL,
+  product TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  PRIMARY KEY (query, product, schema_version)
+);
+```
+
+`product` 为 `learners`。正向查询永久缓存；未命中缓存 24 小时；网络失败时可以使用过期的正向缓存，并在诊断中标注。缓存打开或读写失败时降级为无缓存，不阻塞词条请求。缓存只保存归一化词条，不保存音频，也不保存 Key。
+
+词典可用时，LLM 返回的 `context_sense_id` 和 `other_meanings[].sense_id` 必须属于最终 lemma 的候选；应用用对应 sense 的 `definition` 覆盖 `english_definition`。词典不可用、义项 ID 无效或义项属于其他 lemma 时，保留 LLM 的 `english_definition` 作为兜底。最终来源值仍是默认 `defaultResponse` 形状，保存映射与 contexts 合并不变。
+
+Merriam-Webster 内容按非商业使用要求展示标识与链接；商业或广告支持的分发需要单独授权。
 
 ## 文件与资源限制
 

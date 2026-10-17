@@ -8,6 +8,8 @@ import { planAdd, planDelete, planEdit, exportVocabulary } from '../shared/patch
 import { ProviderService } from './providers'
 import { CredentialRepository } from './credentials'
 import { createLlmAdapter } from './llm'
+import { createDictionaryClient } from './dictionary'
+import { DictionaryCache } from './dictionary-cache'
 import { documentToWire } from '../shared/document-wire'
 import { validateIdentity } from '../shared/entries'
 import { serializeJsonValue } from '../shared/json'
@@ -21,6 +23,7 @@ const documents = new DocumentRepository()
 let settings: SettingsRepository
 let providers: ProviderService
 let credentials: CredentialRepository
+let dictionaryCache: DictionaryCache
 let mainWindow: BrowserWindow | undefined
 let closeAllowed = false
 let currentMenuState = initialMenuState
@@ -319,6 +322,8 @@ function registerHandlers(): void {
   ipcMain.handle('credential:save', (event, key: unknown) => { guard(event); return credentials.save(requireString(key, 'key', 16384)) })
   ipcMain.handle('credential:status', (event, ref: unknown) => { guard(event); return credentials.status(ref === undefined ? undefined : requireString(ref, 'apiKeyRef', 128)) })
   ipcMain.handle('credential:remove', (event, ref: unknown) => { guard(event); return credentials.remove(requireString(ref, 'apiKeyRef', 128)) })
+  ipcMain.handle('dictionary:stats', event => { guard(event); return dictionaryCache.stats() })
+  ipcMain.handle('dictionary:clear', event => { guard(event); dictionaryCache.clear(); return dictionaryCache.stats() })
 
   ipcMain.handle('system:open-external', async (event, rawUrl: unknown) => {
     guard(event)
@@ -468,7 +473,9 @@ app.whenReady().then(() => {
   }
   settings = new SettingsRepository(app.getPath('userData'))
   credentials = new CredentialRepository(app.getPath('userData'))
-  const llm = createLlmAdapter({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref) })
+  dictionaryCache = new DictionaryCache(resolve(app.getPath('userData'), 'dictionary.sqlite'))
+  const dictionary = createDictionaryClient({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref), cache: dictionaryCache })
+  const llm = createLlmAdapter({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref), dictionary })
   providers = new ProviderService(documents, settings, new Map([['LLM', llm]]))
   settings.setChangeListener(() => { providers.cancelAll(); publishSettings() })
   documents.setChangeListener(sendDocument)
@@ -487,6 +494,7 @@ app.on('second-instance', async (_event, argv) => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('before-quit', () => { dictionaryCache?.close() })
 
 const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.quit()
