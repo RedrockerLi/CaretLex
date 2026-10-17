@@ -30,7 +30,7 @@ The bank[^w-bank] is beside the river bank[^w-bank].
 
 article 包含 `original_word` 与 `original_sentence`。原词保留真实大小写、词形；原句按选区 UTF-16 映射位置插入一对方括号，已有括号保留。marker 仅存在于来源数据和保存 JSON，不改变正文。
 
-自动合并复制已有完整值，只按 `original_sentence` 的完整字符串追加 contexts。相同 key 保留原 context，包括人工释义。other_meanings 和其他根字段保留，不做语义去重。无法识别的结构明确失败，由用户整理最终 JSON。主进程保存时不再次合并。
+自动合并复制已有完整值，按 `original_sentence` 的完整字符串匹配 contexts：新原句追加一项，已有原句保留其中的非空释义，只用新值补 `meaning_in_context` 与 `english_definition` 的空白字段。other_meanings 和其他根字段保留，不做语义去重。无法识别的结构明确失败，由用户整理最终 JSON。主进程保存时不再次合并。
 
 ## 设置
 

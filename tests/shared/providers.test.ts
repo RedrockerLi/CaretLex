@@ -160,6 +160,11 @@ describe('context merging, identity and final writes', () => {
     expect(mergeEntry(existing, entry('The [bank] is by the bank.', 'overwrite'))).toEqual({ ok: true, value: existing })
     expect(mergeEntry({ translation: 'old' }, entry('sentence')).ok).toBe(false)
   })
+  it('fills blank context fields from the new value and keeps written wording', () => {
+    const blank = { lemma: 'bank', contexts: [{ original_sentence: 'The [bank].', meaning_in_context: '', english_definition: '' }], other_meanings: [] }
+    expect(mergeEntry(blank, entry('The [bank].', '（名词）银行'))).toEqual({ ok: true, value: { lemma: 'bank', contexts: [{ original_sentence: 'The [bank].', meaning_in_context: '（名词）银行', english_definition: 'definition' }], other_meanings: [] } })
+    expect(mergeEntry(entry('The [bank].', '人工释义'), entry('The [bank].', '新释义'))).toEqual({ ok: true, value: entry('The [bank].', '人工释义') })
+  })
   it('locates exactly one context and reports changed, duplicated and unrecognized sentences', () => {
     expect(locateContext(entry('one'), 'one').context?.meaning_in_context).toBe('义')
     expect(locateContext(entry('one'), 'two').message).toContain('没有匹配')

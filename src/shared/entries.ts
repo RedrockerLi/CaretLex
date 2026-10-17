@@ -32,9 +32,17 @@ export function mergeEntry(existing: JsonValue | undefined, candidate: JsonValue
   const oldRows = contexts(existing); const newRows = contexts(candidate)
   if (!oldRows || !newRows || objectValue(existing)!.lemma !== objectValue(candidate)!.lemma) return { ok: false, error: { code: 'unrecognized-entry', message: '词条结构无法自动合并，请在完整 JSON 中手工整理。' } }
   const merged = cloneJson(existing) as Record<string, JsonValue>
-  const keys = new Set(oldRows.map(row => row.original_sentence))
   const rows = cloneJson(oldRows)
-  for (const row of newRows) if (!keys.has(row.original_sentence)) { rows.push(cloneJson(row)); keys.add(row.original_sentence) }
+  const positions = new Map(rows.map((row, index) => [row.original_sentence, index]))
+  for (const row of newRows) {
+    const index = positions.get(row.original_sentence)
+    if (index === undefined) { positions.set(row.original_sentence, rows.length); rows.push(cloneJson(row)); continue }
+    // 同句保留人工写过的释义，只补空白字段；新值不得覆盖已有内容。
+    for (const key of ['meaning_in_context', 'english_definition'] as const) {
+      const current = rows[index][key]; const fresh = row[key]
+      if (typeof current === 'string' && !current.trim() && typeof fresh === 'string' && fresh.trim()) rows[index][key] = fresh
+    }
+  }
   merged.contexts = rows
   return { ok: true, value: merged }
 }

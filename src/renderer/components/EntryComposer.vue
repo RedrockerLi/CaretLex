@@ -20,6 +20,6 @@ const parsed = computed(() => props.session.parse())
     <textarea id="entry-json" :value="session.text" :disabled="session.saving" class="json-editor compact" rows="10" spellcheck="false" @input="session.edit(($event.target as HTMLTextAreaElement).value)"></textarea>
     <p v-if="!parsed.ok" class="error-text">{{ parsed.message }}</p>
     <details class="value-preview"><summary>本次候选和来源 JSON</summary><pre>{{ JSON.stringify({ candidate: session.candidate, sources: session.sources }, null, 2) }}</pre></details>
-    <footer class="composer-actions"><button class="button button-secondary" :disabled="session.saving" @click="emit('cancel')">取消</button><button class="button button-secondary" :disabled="session.saving || session.invalid" @click="emit('retry')">手动重新获取</button><button class="button button-primary" :disabled="!parsed.ok || session.invalid || session.saving || busy" @click="emit('submit')">{{ session.saving ? '写入中…' : session.locked ? '保存锁定词条' : '确认并保存' }}</button></footer>
+    <footer class="composer-actions"><button class="button button-secondary" :disabled="session.saving" @click="emit('cancel')">取消</button><button class="button button-secondary" :disabled="session.saving || session.invalid" @click="emit('retry')">手动重新获取</button><button class="button button-primary" :disabled="!parsed.ok || session.invalid || session.saving || busy || !!session.requestId" @click="emit('submit')">{{ session.requestId ? '等待自动数据…' : session.saving ? '写入中…' : session.locked ? '保存锁定词条' : '确认并保存' }}</button></footer>
   </section>
 </template>
