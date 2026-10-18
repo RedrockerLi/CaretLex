@@ -8,6 +8,7 @@ import merriamWebsterLight from '../assets/merriam-webster-light.png'
 import merriamWebsterDark from '../assets/merriam-webster-dark.png'
 
 const props = defineProps<{
+  visible: boolean
   snapshot: SettingsSnapshot | null; externalSnapshot: SettingsSnapshot | null; draft: string; dirty: boolean; error: string
   onSave: (value: unknown) => Promise<boolean>; onReset: () => Promise<boolean>
   onChoosePath: () => Promise<void>; onReloadExternal: () => void
@@ -177,6 +178,12 @@ async function clearAudio() {
   catch { audioError.value = '发音音频清空失败。' }
   finally { saving.value = false }
 }
+// 设置面板用 v-show 常驻挂载，缓存统计只在面板打开时读取；否则数字会停在应用启动那一刻。
+watch(() => props.visible, visible => {
+  if (!visible) return
+  void refreshCacheStats()
+  void refreshAudioStats()
+}, { immediate: true })
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -276,8 +283,6 @@ watch(() => form.value?.providers.map(profile => ({ name: profile.name, ref: pro
 watch(() => form.value?.dictionary.apiKeyRef, () => { void dictionaryCredential() }, { immediate: true })
 onMounted(async () => {
   try { descriptions.value = await window.caretlex.providerTypes() } catch (error) { localError.value = String(error) }
-  void refreshCacheStats()
-  void refreshAudioStats()
 })
 async function restoreDefaults() {
   saving.value = true; localError.value = ''; notice.value = ''

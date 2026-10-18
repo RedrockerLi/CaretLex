@@ -274,6 +274,7 @@ onBeforeUnmount(() => {
 
     <section class="settings-overlay" v-show="settingsOpen">
       <SettingsView
+        :visible="settingsOpen"
         :snapshot="workspace.settingsSnapshot"
         :external-snapshot="workspace.settingsExternal"
         :draft="workspace.settingsDraft"
