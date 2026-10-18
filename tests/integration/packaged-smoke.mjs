@@ -373,7 +373,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-field=apiType]').options.length"), 4)
   assert.equal(await evaluate("document.querySelector('.settings-page').scrollWidth <= document.querySelector('.settings-page').clientWidth"), true)
   assert.ok(await evaluate("document.querySelector('[data-field=prompt]').clientHeight >= 220 && document.querySelector('[data-field=responseTemplate]').clientHeight >= 220"))
-  assert.equal(await evaluate("!!document.querySelector('[data-field=dictionary-enabled]') && !!document.querySelector('[data-field=dictionary-clear-cache]') && !!document.querySelector('[data-field=dictionary-responseTemplate]')"), true, 'The dictionary enhancement card renders')
+  assert.equal(await evaluate("!!document.querySelector('[data-field=dictionary-enabled]') && !!document.querySelector('[data-field=dictionary-clear-cache]') && !!document.querySelector('[data-field=dictionary-responseTemplate]') && !!document.querySelector('[data-field=audio-clear-cache]')"), true, 'The dictionary enhancement card renders')
   await screenshot('/tmp/caretlex-settings.png')
   await evaluate("document.querySelector('.provider-fields .settings-editors').scrollIntoView({block:'center'})")
   await screenshot('/tmp/caretlex-settings-editors.png')

@@ -23,6 +23,26 @@ watch(() => props.revision, revision => { if (editing.value && revision !== base
 watch(editing, value => emit('editing', value))
 const position = computed(() => ({ left: `${Math.max(12, Math.min(props.x, window.innerWidth - 440))}px`, top: `${Math.max(12, Math.min(props.y, window.innerHeight - 600))}px` }))
 const context = computed(() => locateContext(props.entry.value, props.sentence))
+const pronunciation = computed(() => {
+  const value = props.entry.value
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, JsonValue> : undefined
+  return {
+    ipa: record && typeof record.ipa === 'string' ? record.ipa.trim() : '',
+    audio: record && typeof record.audio === 'string' ? record.audio.trim() : ''
+  }
+})
+const audioState = ref<'idle' | 'loading' | 'error'>('idle')
+watch(() => pronunciation.value.audio, () => { audioState.value = 'idle' })
+async function play() {
+  if (audioState.value === 'loading' || !pronunciation.value.audio) return
+  audioState.value = 'loading'
+  try {
+    const data = await window.caretlex.loadPronunciation(pronunciation.value.audio)
+    if (!data) { audioState.value = 'error'; return }
+    await new Audio(data).play()
+    audioState.value = 'idle'
+  } catch { audioState.value = 'error' }
+}
 function beginEdit() {
   editing.value = true; expanded.value = true
   baseRevision = props.revision; editingLemma = props.entry.lemma; editingDocument = props.documentId
@@ -44,7 +64,8 @@ async function save() {
 </script>
 <template>
   <section class="vocab-card" :style="position" aria-label="词条详情" @mouseenter="emit('stay')" @mouseleave="emit('leave')">
-    <header class="vocab-card-header"><div><span class="eyebrow">{{ entry.managed ? '本篇文档词条' : '区块外词条 · 只读' }}</span><h3>{{ entry.lemma }}</h3></div><button class="icon-button" :disabled="saving" aria-label="关闭词条卡" @click="emit('close')">×</button></header>
+    <header class="vocab-card-header"><div><span class="eyebrow">{{ entry.managed ? '本篇文档词条' : '区块外词条 · 只读' }}</span><h3>{{ entry.lemma }}<button v-if="pronunciation.audio" class="pronunciation-button" type="button" :disabled="audioState === 'loading'" title="播放 Merriam-Webster 发音" aria-label="播放 Merriam-Webster 发音" @click="play"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M7.5 2.6 4.2 5.3H2.4a.8.8 0 0 0-.8.8v3.8a.8.8 0 0 0 .8.8h1.8l3.3 2.7a.5.5 0 0 0 .8-.4V3a.5.5 0 0 0-.8-.4Z" /><path d="M10.6 5.2a3.4 3.4 0 0 1 0 5.6M12.4 3.4a5.6 5.6 0 0 1 0 9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg></button></h3><p v-if="pronunciation.ipa" class="pronunciation-ipa">/{{ pronunciation.ipa }}/</p></div><button class="icon-button" :disabled="saving" aria-label="关闭词条卡" @click="emit('close')">×</button></header>
+    <p v-if="audioState === 'error'" class="notice notice-warning">发音暂不可用；联网后可再试一次。</p>
     <p v-if="context.context" class="translation" :class="{ placeholder: !context.context.meaning_in_context }">{{ context.context.meaning_in_context || '尚无中文释义，可点击“编辑”补全。' }}</p>
     <p v-else class="notice notice-warning">{{ articleError || context.message }}</p>
     <details v-if="!editing"><summary>全部上下文与其他词义</summary><pre>{{ JSON.stringify(entry.value, null, 2) }}</pre></details>

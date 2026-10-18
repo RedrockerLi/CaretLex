@@ -24,6 +24,8 @@ The bank[^w-bank] is beside the river bank[^w-bank].
 
 通用 JSON 根值可以是对象、数组、字符串、有限数字、布尔值或 null。默认对象含根级 lemma、成对的 contexts 和 other_meanings；保存过的根级 lemma 与脚注身份保持一致，不能修改或删除。自定义/旧结构不自动转换；自动 contexts 合并和当前语境摘要只识别默认结构。
 
+默认结构可含两个可选发音字段：`ipa`（Merriam-Webster 音标原文，不含斜杠）和 `audio`（Merriam-Webster 发音媒体地址）。二者都是字符串，缺省时整键不出现；`mergeEntry` 只用新值补既有词条缺失或为空的发音字段，不覆盖已有内容。
+
 添加总是采用用户确认的完整最终值。已有同名定义也更新值，同位置相同引用允许更新定义；只有引用和定义均无变化才 no-op。其他词条引用不可叠加。区块外定义只读，重复归一化定义、非法托管 JSON 或损坏标记阻止词条操作与导出。源码编辑可用于人工修复。
 
 ## Article 与 contexts
@@ -82,11 +84,12 @@ prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}`、`{
 | `llm_main.other_meanings[0].meaning` | 指定下标 |
 | `llm_main.other_meanings` | 复制完整 JSON 子树 |
 | `{"$literal": ...}` | 内部值不求值 |
+| `{"$optional": "llm_main.ipa"}` | 可选文本字段：来源有非空字符串就取用，否则写 `""` 且不产生诊断 |
 | 其他普通 JSON 值 | 保留字面量 |
 
 动态输出数组只能有一个元素模板，并且只能展开一个来源列表。同列表字段共享当前下标，标量可广播；源列表为零项时输出 `[]`。嵌套数组需明确对应层级，不 zip、不拼接、不平铺、不猜测多个列表关系。固定数组逐项实例化。第一版路径字段为可引用标识，复杂字段名可整体引用父 JSON 子树。
 
-缺失字符串字段由响应示例确定类型，填 `""` 并诊断；不可用展开列表输出 `[]`；其他缺失值用 null。错误行保留行数与其他合法字段。完整子树绑定存在结构错误时用 null 待手填，不执行未配置修补。合法 null、空数组与缺失字段分别识别。来源路径不会作为未解析绑定直接写入。
+缺失字符串字段由响应示例确定类型，填 `""` 并诊断；`{"$optional": ...}` 引用的字段缺失、为空或不是字符串时同样填 `""`，但不诊断；不可用展开列表输出 `[]`；其他缺失值用 null。错误行保留行数与其他合法字段。完整子树绑定存在结构错误时用 null 待手填，不执行未配置修补。合法 null、空数组与缺失字段分别识别。来源路径不会作为未解析绑定直接写入。
 
 ## LLM HTTP 与凭据
 
@@ -125,11 +128,23 @@ CREATE TABLE lookups (
   expires_at INTEGER,
   PRIMARY KEY (query, product, schema_version)
 );
+
+CREATE TABLE audio (
+  url TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  bytes BLOB NOT NULL,
+  size INTEGER NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
 ```
 
-`product` 为 `learners`。正向查询永久缓存；未命中缓存 24 小时；网络失败时可以使用过期的正向缓存，并在诊断中标注。缓存打开或读写失败时降级为无缓存，不阻塞词条请求。缓存只保存归一化词条，不保存音频，也不保存 Key。
+`product` 为 `learners`。正向查询永久缓存；未命中缓存 24 小时；网络失败时可以使用过期的正向缓存，并在诊断中标注。缓存打开或读写失败时降级为无缓存，不阻塞词条请求。缓存只保存归一化词条和 Key 之外的请求结果。`lookups` 的 `schema_version` 变更会在打开时清理旧行。
 
-词典可用时，LLM 返回的 `context_sense_id` 和 `other_meanings[].sense_id` 必须属于最终 lemma 的候选；应用用对应 sense 的 `definition` 覆盖 `english_definition`。词典不可用、义项 ID 无效或义项属于其他 lemma 时，保留 LLM 的 `english_definition` 作为兜底。最终来源值仍是默认 `defaultResponse` 形状，保存映射与 contexts 合并不变。
+`audio` 表按媒体地址保存发音字节，无过期时间，与查询缓存分开清理；`audio:clear` 只清空该表。两个表共用一个数据库文件，各自持有一个连接。
+
+发音媒体地址为 `https://media.merriam-webster.com/audio/prons/en/us/mp3/{subdirectory}/{audio}.mp3`，`subdirectory` 按 API 规则由 `hwi.prs[].sound.audio` 推导（`bix`、`gg`、首字母或 `number`）。该地址不需要 API Key，也不计入每日查询额度。下载由主进程发起，只接受上述前缀的地址，`content-type` 必须以 `audio/` 开头，上限 1 MiB；保存词条后后台预取，播放时未命中再抓一次，失败不阻塞词条流程。
+
+词典可用时，LLM 返回的 `context_sense_id` 和 `other_meanings[].sense_id` 必须属于最终 lemma 的候选；应用用对应 sense 的 `definition` 覆盖 `english_definition`。词典不可用、义项 ID 无效或义项属于其他 lemma 时，保留 LLM 的 `english_definition` 作为兜底。最终来源值在默认 `defaultResponse` 字段之外还含 `ipa` 和 `audio`（取匹配最终 lemma 的候选，缺失时为空字符串），这两个字段不发给 LLM；保存映射与 contexts 合并不变。
 
 Merriam-Webster 内容按非商业使用要求展示标识与链接；商业或广告支持的分发需要单独授权。
 

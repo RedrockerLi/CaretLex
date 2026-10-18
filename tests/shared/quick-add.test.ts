@@ -4,7 +4,7 @@ import { defaultSettings, parseSettings, renameProfile, type AppSettings, type P
 import { defaultResponse, llmPreset, llmType } from '../../src/shared/providers'
 import type { ArticleData } from '../../src/shared/providers'
 import type { EntryLocation, SourceResult } from '../../src/shared/bridge'
-import type { VocabRecord } from '../../src/shared/types'
+import type { JsonValue, VocabRecord } from '../../src/shared/types'
 
 const profile = (name = 'ai_main'): ProviderProfile => ({ name, type: 'LLM', enabled: true, config: { ...llmType.defaultConfig() as object, baseUrl: 'https://example.com/v1', model: 'test' } })
 const location: EntryLocation = { documentId: 'document', baseRevision: 'base', sourceSpan: { start: 4, end: 8 }, selected: 'went' }
@@ -37,14 +37,25 @@ describe('quick add queue', () => {
   it('adopts the provider lemma suggestion and writes the fetched meaning once', () => {
     expect(buildQuickAddEntry(job({ result: response('one') }), settings, 'settings', new Map())).toEqual({
       ok: true,
-      value: { lemma: 'go', usedSources: true, value: { lemma: 'go', contexts: [{ original_sentence: 'She [went].', meaning_in_context: '去', english_definition: 'move' }], other_meanings: [] } }
+      value: { lemma: 'go', usedSources: true, value: { lemma: 'go', ipa: '', audio: '', contexts: [{ original_sentence: 'She [went].', meaning_in_context: '去', english_definition: 'move' }], other_meanings: [] } }
+    })
+  })
+
+  it('writes pronunciation fields when the source provides them', () => {
+    const result = response('one')
+    const source = result.sources.ai_main as Record<string, JsonValue>
+    source.ipa = 'ˈgoʊ'
+    source.audio = 'https://media.merriam-webster.com/audio/prons/en/us/mp3/g/go0001.mp3'
+    expect(buildQuickAddEntry(job({ result }), settings, 'settings', new Map())).toMatchObject({
+      ok: true,
+      value: { value: { ipa: 'ˈgoʊ', audio: 'https://media.merriam-webster.com/audio/prons/en/us/mp3/g/go0001.mp3' } }
     })
   })
 
   it('falls back to the selected lowercase form with empty meanings when no result arrived', () => {
     expect(buildQuickAddEntry(job(), settings, 'settings', new Map())).toEqual({
       ok: true,
-      value: { lemma: 'went', usedSources: false, value: { lemma: 'went', contexts: [{ original_sentence: 'She [went].', meaning_in_context: '', english_definition: '' }], other_meanings: [] } }
+      value: { lemma: 'went', usedSources: false, value: { lemma: 'went', ipa: '', audio: '', contexts: [{ original_sentence: 'She [went].', meaning_in_context: '', english_definition: '' }], other_meanings: [] } }
     })
   })
 

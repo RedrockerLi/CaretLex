@@ -16,7 +16,7 @@ async function tempDir() {
 const lookup: DictionaryLookup = {
   query: 'went',
   candidates: [{
-    entryId: 'go:1', lemma: 'go', partOfSpeech: 'verb',
+    entryId: 'go:1', lemma: 'go', partOfSpeech: 'verb', ipa: 'ˈgoʊ', audio: 'go0001',
     senses: [{ id: 'go:1#0', definition: 'to move or travel', examples: ['We went home.'] }]
   }],
   fetchedAt: 1
@@ -75,7 +75,7 @@ describe('DictionaryCache', () => {
     cleanups.push(async () => cache.close())
     const raw = new DatabaseSync(path)
     raw.prepare('INSERT INTO lookups (query, product, schema_version, payload, fetched_at, expires_at) VALUES (?, ?, ?, ?, ?, NULL)')
-      .run('broken', 'learners', 1, '{not json', Date.now())
+      .run('broken', 'learners', 2, '{not json', Date.now())
     raw.close()
     expect(cache.get('broken')).toBeUndefined()
     expect(cache.stats().entries).toBe(0)

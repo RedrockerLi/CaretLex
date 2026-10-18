@@ -44,6 +44,7 @@ export interface SourceResult {
 }
 export interface ProviderDescription { type: string; defaultConfig: JsonValue; hasPreset: boolean }
 export interface DictionaryCacheStats { entries: number; bytes: number; available: boolean }
+export interface AudioStats { entries: number; bytes: number; available: boolean }
 export interface CaretLexBridge {
   onMenuCommand(callback: (command: MenuCommand) => void): () => void
   updateMenuState(state: MenuState): void
@@ -58,6 +59,9 @@ export interface CaretLexBridge {
   removeCredential(ref: string): Promise<void>
   dictionaryCacheStats(): Promise<DictionaryCacheStats>
   clearDictionaryCache(): Promise<DictionaryCacheStats>
+  loadPronunciation(url: string): Promise<string | null>
+  audioStats(): Promise<AudioStats>
+  clearAudio(): Promise<AudioStats>
   takeStartupDocument(): Promise<DocumentResult | null>
   openMarkdown(): Promise<DocumentResult | null>
   newDocument(): Promise<DocumentResult>

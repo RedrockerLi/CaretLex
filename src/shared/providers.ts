@@ -68,6 +68,8 @@ Response JSON example:
 export function llmPreset(name: string): JsonValue {
   return {
     lemma: `${name}.lemma`,
+    ipa: { $optional: `${name}.ipa` },
+    audio: { $optional: `${name}.audio` },
     contexts: [{ original_sentence: 'article.original_sentence', meaning_in_context: `${name}.meaning_in_context`, english_definition: `${name}.english_definition` }],
     other_meanings: [{ meaning: `${name}.other_meanings[].meaning`, english_definition: `${name}.other_meanings[].english_definition`, example_sentence: `${name}.other_meanings[].example_sentence` }]
   }
@@ -153,8 +155,11 @@ export function dictionaryPresetCompatibility(responseTemplate: JsonValue): stri
 }
 export function isDefaultSaveStructure(value: JsonValue): boolean {
   const keys = (item: JsonValue, wanted: string[]) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).sort().join(',') === wanted.sort().join(',')
-  if (!keys(value, ['lemma', 'contexts', 'other_meanings'])) return false
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const root = value as Record<string, JsonValue>
+  if (Object.keys(root).some(key => !['lemma', 'contexts', 'other_meanings', 'ipa', 'audio'].includes(key))) return false
+  if (!['lemma', 'contexts', 'other_meanings'].every(key => Object.hasOwn(root, key))) return false
+  // ipa/audio 是可选的发音字段（预设里是 $optional 引用，手写词条里是字符串），类型交给映射校验。
   return typeof root.lemma === 'string' && Array.isArray(root.contexts) && root.contexts.length === 1 && keys(root.contexts[0], ['original_sentence', 'meaning_in_context', 'english_definition'])
     && Object.values(root.contexts[0] as object).every(item => typeof item === 'string')
     && Array.isArray(root.other_meanings) && root.other_meanings.length <= 1 && root.other_meanings.every(item => keys(item, ['meaning', 'english_definition', 'example_sentence']) && Object.values(item as object).every(child => typeof child === 'string'))

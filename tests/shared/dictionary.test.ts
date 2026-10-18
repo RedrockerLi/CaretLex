@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  assembleEnrichedEntry, buildDictionaryReference, cleanDictionaryText,
-  normalizeLearnersResponse, type DictionaryLookup
+  assembleEnrichedEntry, buildDictionaryReference, cleanDictionaryText, isPronunciationUrl,
+  normalizeLearnersResponse, pronunciationUrl, type DictionaryLookup
 } from '../../src/shared/dictionary'
 
 function entry(
@@ -102,6 +102,39 @@ describe('normalizeLearnersResponse', () => {
     expect(normalizeLearnersResponse('gooo', ['goo', 'go']).candidates).toEqual([])
     expect(normalizeLearnersResponse('gooo', null).candidates).toEqual([])
   })
+
+  it('carries the pronunciation audio file name and drops unusable ones', () => {
+    expect(normalizeLearnersResponse('went', wentFixture).candidates[0].audio).toBe('test001')
+    const raw = (audio: unknown) => [{
+      meta: { id: 'go:1', stems: ['go'] },
+      hwi: { hw: 'go', prs: [{ ipa: 'goʊ', ...(audio === undefined ? {} : { sound: { audio } }) }] },
+      def: [{ sseq: [[['sense', { dt: [['text', 'to move']] }]]] }]
+    }]
+    expect(normalizeLearnersResponse('go', raw(undefined)).candidates[0].audio).toBeUndefined()
+    expect(normalizeLearnersResponse('go', raw('bad/id')).candidates[0].audio).toBeUndefined()
+  })
+})
+
+describe('pronunciationUrl', () => {
+  const base = 'https://media.merriam-webster.com/audio/prons/en/us/mp3'
+  it('applies the Merriam-Webster subdirectory rules', () => {
+    expect(pronunciationUrl('apple001')).toBe(`${base}/a/apple001.mp3`)
+    expect(pronunciationUrl('bix001')).toBe(`${base}/bix/bix001.mp3`)
+    expect(pronunciationUrl('gg001')).toBe(`${base}/gg/gg001.mp3`)
+    expect(pronunciationUrl('3d000001')).toBe(`${base}/number/3d000001.mp3`)
+    expect(pronunciationUrl('_x1')).toBe(`${base}/number/_x1.mp3`)
+    expect(pronunciationUrl('go:1')).toBeUndefined()
+    expect(pronunciationUrl('')).toBeUndefined()
+  })
+
+  it('only accepts exact Merriam-Webster media addresses', () => {
+    expect(isPronunciationUrl(`${base}/a/apple001.mp3`)).toBe(true)
+    expect(isPronunciationUrl(`${base}/A/apple001.mp3`)).toBe(false)
+    expect(isPronunciationUrl(`${base}/a/../../secret.mp3`)).toBe(false)
+    expect(isPronunciationUrl(`${base}/a/apple001.mp3?key=x`)).toBe(false)
+    expect(isPronunciationUrl('https://evil.test/audio/prons/en/us/mp3/a/apple001.mp3')).toBe(false)
+    expect(isPronunciationUrl('http://media.merriam-webster.com/audio/prons/en/us/mp3/a/apple001.mp3')).toBe(false)
+  })
 })
 
 describe('cleanDictionaryText', () => {
@@ -132,6 +165,12 @@ describe('buildDictionaryReference', () => {
   it('marks an empty lookup as unavailable', () => {
     const reference = buildDictionaryReference({ query: 'word', candidates: [], fetchedAt: 0 }, 'word')
     expect(reference).toMatchObject({ available: false, word: 'word' })
+  })
+
+  it('never sends pronunciation data to the LLM', () => {
+    const serialized = JSON.stringify(buildDictionaryReference(normalizeLearnersResponse('went', wentFixture), 'went'))
+    expect(serialized).not.toContain('test001')
+    expect(serialized).not.toContain('/test/')
   })
 })
 
@@ -232,6 +271,25 @@ describe('assembleEnrichedEntry', () => {
     if (!result.ok) return
     expect((result.value.meaning_in_context as string).length).toBe(2000)
     expect(result.value.other_meanings).toHaveLength(8)
+  })
+
+  it('writes the pronunciation fields of the matched candidate', () => {
+    const result = assembleEnrichedEntry({
+      lemma: 'go', context_sense_id: 'go:1#0', meaning_in_context: '去',
+      english_definition: '', other_meanings: []
+    }, lookup)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.ipa).toBe('/test/')
+    expect(result.value.audio).toBe('https://media.merriam-webster.com/audio/prons/en/us/mp3/t/test001.mp3')
+  })
+
+  it('leaves pronunciation fields empty without a lookup', () => {
+    const result = assembleEnrichedEntry({
+      lemma: 'go', context_sense_id: '', meaning_in_context: '去',
+      english_definition: 'LLM definition', other_meanings: []
+    }, undefined)
+    expect(result.ok && result.value).toMatchObject({ ipa: '', audio: '' })
   })
 
   it('rejects a non-object LLM response', () => {

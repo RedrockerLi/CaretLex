@@ -1,6 +1,6 @@
 # 架构说明
 
-CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/GFM、CodeMirror、Shiki 与 sbd@1.0.19。Markdown 是词条数据源，没有独立词条数据库；`dictionary.sqlite` 只是词典查询缓存。
+CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/GFM、CodeMirror、Shiki 与 sbd@1.0.19。Markdown 是词条数据源，没有独立词条数据库；`dictionary.sqlite` 只是词典查询缓存与发音音频存储。
 
 ## 进程与模块
 
@@ -16,13 +16,14 @@ CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/G
 | `src/main/llm-protocols.ts` | 四种 API 的请求封装、认证头、严格响应文本解析；协议选择不影响通用映射 |
 | `src/main/dictionary.ts` | Learner's HTTP 查询、缓存读写、独立超时、错误分类与过期缓存兜底 |
 | `src/main/dictionary-cache.ts` | `node:sqlite` 归一化词条缓存、正/负 TTL、统计与清空 |
+| `src/main/audio.ts` / `src/main/audio-store.ts` | 发音媒体地址校验与下载、`node:sqlite` 音频 BLOB 存储、统计与清空 |
 | `src/main/providers.ts` | requestId 登记、唯一实例选择、来源命名空间、类型描述与预设、版本复核、词典运行时配置传递 |
 | `src/main/credentials.ts` | 本机稳定凭据引用、串行 0600 原子写入、损坏文件保护、存在性与掩码查询、按引用删除 |
 | `src/main/desktop-integration.ts` | Linux 用户级 `.desktop` 与 hicolor 图标（NoDisplay，供任务栏按 app_id 匹配） |
 | `src/shared/providers.ts` | 统一类型/适配器接口、LLM 默认配置与预设、响应示例检查、词典增强默认 Prompt/响应 |
-| `src/shared/dictionary.ts` | Learner's 响应解析、候选过滤、参考 JSON、最终词条组装 |
+| `src/shared/dictionary.ts` | Learner's 响应解析、候选过滤、参考 JSON、发音地址推导与校验、最终词条组装 |
 | `src/shared/settings.ts` | 设置配置、单实例校验、词典配置与 Prompt 归一化、明确引用重命名 |
-| `src/shared/mapping.ts` | 纯来源路径求值、数组层级与列表展开、字面量、字段诊断 |
+| `src/shared/mapping.ts` | 纯来源路径求值、数组层级与列表展开、字面量与可选字段、字段诊断 |
 | `src/shared/entries.ts` | 身份校验、纯 contexts 合并和精确当前语境匹配 |
 | `src/shared/entry-session.ts` | 锁定目标、来源/候选/人工稿/待应用结果、请求代次、失效与失败保留 |
 | `src/shared/protocol.ts` / `patch.ts` | Markdown 解析、选区映射、诊断、定点最终值写入、删除与导出 |
@@ -35,18 +36,20 @@ CaretLex 使用 Electron、Vue 3、Pinia、TypeScript、electron-vite、remark/G
 ```text
 真实源码选区 + 捕获的文档/设置版本
   → 主进程 article：真实词形、完整标记原句
-  → 可选词典增强：Learner's 查询/缓存 → 候选义项与 sense ID
+  → 可选词典增强：Learner's 查询/缓存 → 候选义项、sense ID、音标与发音文件名
   → 唯一已保存启用且被引用的 provider（词典参考随可见 Prompt 发送）
-  → 按义项 ID 用词典释义组装默认来源值
+  → 按义项 ID 用词典释义组装默认来源值，并附上匹配候选的 ipa 与发音地址
   → 来源 JSON 与字段诊断
-  → 保存映射实例化
-  → 目标 lemma 的 contexts 合并
+  → 保存映射实例化（发音字段用可选引用）
+  → 目标 lemma 的 contexts 合并与缺失发音字段补齐
   → 完整 JSON 人工稿或待应用结果
   → 主进程和共享核心复核身份、revision、范围、大小
   → 原子文件写入与真实回执
 ```
 
 普通自动 provider 只接收 article、自己的 JSON config 与 AbortSignal；词典增强启用时，context 还包含超时、凭据引用和增强响应示例。凭据值由主进程按引用取得，不进入 renderer、prompt 或来源结果；设置界面只显示主进程计算的掩码。请求体是设置页 Prompt 的变量替换结果，主进程不附加隐藏 system 文本。词典结果先归一化为候选义项，参考 JSON 随 `{{dictionary}}` 发送；LLM 选择 lemma/义项并填写中文释义与例句，主进程按义项 ID 用词典原文组装默认来源值。词典失败时用 `available:false` 参考继续请求 LLM，英文释义由 LLM 兜底。生产使用真实 fetch；测试注入本机模拟 HTTP 服务或词典客户端。
+
+发音字节由主进程按词条里的媒体地址获取：写入词条后后台预取，悬停词条卡播放时未命中再抓一次，只接受 Merriam-Webster 媒体前缀并以 `data:` URL 返回 renderer，CSP 的 `media-src` 只放行 `self` 与 `data:`。
 
 新增类型实现 `ProviderAdapter`，注册到类型描述/配置注册表和主进程适配器表，提供默认配置与保存预设；通用获取、映射、合并、完整编辑和文件协议沿用同一流程。没有可靠上下文义时明确提示，不以首条词典释义代替。
 
@@ -66,13 +69,13 @@ EntrySession 捕获 location、设置 revision、目标、来源、候选、文�
 
 ## 安全与资源
 
-BrowserWindow 使用 sandbox、contextIsolation、关闭 nodeIntegration、固定发送者和 IPC 白名单。页面禁止导航、新窗口和权限请求，不使用 v-html；原始 HTML 以文本显示。本地图片经 realpath 和打开后文件描述符检查限制在文档目录内。远程图片由用户主动加载。AI 与词典请求不跟随重定向，不将 Key 放入请求正文或主动生成的词条字段。词典错误消息不包含完整 URL 或 Key；缓存不保存 Key 或音频。
+BrowserWindow 使用 sandbox、contextIsolation、关闭 nodeIntegration、固定发送者和 IPC 白名单。页面禁止导航、新窗口和权限请求，不使用 v-html；原始 HTML 以文本显示。本地图片经 realpath 和打开后文件描述符检查限制在文档目录内。远程图片由用户主动加载。AI、词典与发音请求不跟随重定向，不将 Key 放入请求正文或主动生成的词条字段。词典错误消息不包含完整 URL 或 Key；缓存不保存 Key。发音请求只接受 `isPronunciationUrl` 放行的媒体地址，拒绝其他主机、路径与查询串，`content-type` 必须以 `audio/` 开头，上限 1 MiB。
 
 Markdown 上限 16 MiB；设置、词条、AI 请求和响应上限 1 MiB。JSON 必须有限、无循环且可序列化。响应严格解析，不修补。超时与取消释放定时器，结果经过文档/设置版本再次复核。
 
 ## 验证
 
-Vitest 覆盖协议和边界映射、声明的 article 样例、设置及 API 类型校验（含旧默认 Prompt 升级与词典 Prompt 归一化）、数组映射、JSON 子树与字面量、contexts 合并、身份锁定、异步手改保护、配置恢复、损坏/无法解码/超限设置的显式恢复、冲突保护、凭据权限、掩码与按引用删除、迁移隔离，以及桌面条目的内容与幂等写入。词典测试覆盖 Learner's 响应归一化、重定向占位条目与噪声过滤、义项 ID、参考 JSON 裁剪、最终词条组装、SQLite 正/负缓存与过期兜底、缺凭据/超时/HTTP 错误/非法响应、Key 不进入错误消息，以及 adapter 在词典成功和失败时的两条路径。
+Vitest 覆盖协议和边界映射、声明的 article 样例、设置及 API 类型校验（含旧默认 Prompt 升级与词典 Prompt 归一化）、数组映射、JSON 子树与字面量、contexts 合并、身份锁定、异步手改保护、配置恢复、损坏/无法解码/超限设置的显式恢复、冲突保护、凭据权限、掩码与按引用删除、迁移隔离，以及桌面条目的内容与幂等写入。词典测试覆盖 Learner's 响应归一化、重定向占位条目与噪声过滤、义项 ID、发音文件名解析与媒体地址推导、参考 JSON 裁剪、最终词条组装与发音字段、SQLite 正/负缓存与过期兜底、缺凭据/超时/HTTP 错误/非法响应、Key 不进入错误消息，以及 adapter 在词典成功和失败时的两条路径。音频测试覆盖 BLOB 存取、统计与清空、清空查询缓存不影响音频、打开失败降级、地址白名单、`content-type` 与大小限制、缓存命中与后台预取。映射测试覆盖 `$optional` 的有值、缺字段、空值与非法引用。
 
 `tests/main/providers.test.ts` 使用本机 HTTP 服务验证实际请求路径、认证、prompt、JSON mode、外层/内容错误、HTTP 状态、取消、超时与实际字节上限，并验证词典参考、增强响应示例和回退组装。这是协议实现验证，不是某个线上模型服务的联调验证。
 

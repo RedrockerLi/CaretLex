@@ -40,7 +40,9 @@ LLM 表单提供实例名称、类型、启用状态、API 类型、Base URL、�
 
 自动获取发生在新增录入窗打开后，仅请求已保存、启用且被模板引用的实例。`type` 为 `LLM`，API 类型选择实际决定请求及响应协议：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 或 Gemini Generate Content。基础地址保留路径且不补版本路径，根据所选 API 追加相应端点。JSON mode 由服务支持；Anthropic Messages 通过 Prompt 请求 JSON，不提供 json_object 开关。请求内容就是设置页展示的 Prompt 替换变量后的结果，应用不追加任何隐藏指令或 system 文本；与旧默认完全一致的 Prompt 在加载时升级为新默认。所有协议只接受纯 JSON 内容，不剥离围栏、不抽取片段、不修补、不自动重试或降级。响应示例检查字段及类型，合法字段参与映射，缺失或错误字段待手填。
 
-词典增强是全局设置，使用 Merriam-Webster Learner's Dictionary。启用后，自动请求先用选中的词形查询词典，取得候选 lemma、词性、义项和英文释义，再把候选作为可见的 `{{dictionary}}` Prompt 变量发送给已启用的 LLM。LLM 选择 lemma 和义项 ID，填写中文释义与英文例句；应用按义项 ID 用词典原文组装 `english_definition`。未修改的默认 Prompt 在启用时自动切换为词典增强默认 Prompt；自定义 Prompt 必须包含 `{{dictionary}}`，否则设置校验失败。停用时词典增强默认 Prompt 自动恢复为普通默认。词典使用独立的 Learner's API Key，保存在本机凭据文件中。词典失败、超时或无词条时回退纯 LLM，录入窗诊断区显示原因。词典查询结果保存在本机 `dictionary.sqlite`，不保存音频；正向结果永久缓存，未命中缓存 24 小时，网络失败时可使用过期缓存。词典参考会随 Prompt 发送给用户配置的 LLM 服务。设置页显示 Merriam-Webster 标识与链接。
+词典增强是全局设置，使用 Merriam-Webster Learner's Dictionary。启用后，自动请求先用选中的词形查询词典，取得候选 lemma、词性、义项和英文释义，再把候选作为可见的 `{{dictionary}}` Prompt 变量发送给已启用的 LLM。LLM 选择 lemma 和义项 ID，填写中文释义与英文例句；应用按义项 ID 用词典原文组装 `english_definition`。未修改的默认 Prompt 在启用时自动切换为词典增强默认 Prompt；自定义 Prompt 必须包含 `{{dictionary}}`，否则设置校验失败。停用时词典增强默认 Prompt 自动恢复为普通默认。词典使用独立的 Learner's API Key，保存在本机凭据文件中。词典失败、超时或无词条时回退纯 LLM，录入窗诊断区显示原因。词典查询结果保存在本机 `dictionary.sqlite`；正向结果永久缓存，未命中缓存 24 小时，网络失败时可使用过期缓存。词典参考会随 Prompt 发送给用户配置的 LLM 服务。设置页显示 Merriam-Webster 标识与链接。
+
+词典同时提供发音：词条的 `ipa` 与 `audio` 字段来自匹配最终 lemma 的候选，写进 Markdown 里的词条 JSON，随导出带走。音频字节按媒体地址保存在本机 `dictionary.sqlite` 的 `audio` 表，保存词条后后台预取，悬停词条卡可离线播放；发音地址不需要 API Key，也不计入每日查询额度。音标和音频地址不发给 LLM。设置页分别显示查询缓存与发音音频的用量，并可分别清空。
 
 ## 手改与失败
 
@@ -66,4 +68,4 @@ Key 存在本机用户数据目录的独立明文 `credentials.json`，权限 `0
 
 Markdown 上限 16 MiB，设置、单词条及 AI 请求/响应各为 1 MiB，超限失败，不截断。自定义结构由用户维护，应用不做语义字段匹配、通用摘要识别或累计路径推断。分句按规则验收，不承诺通用语义分句；AI 输出需人工检查。
 
-源码使用 CodeMirror，保存前比较文件 revision，原子写入保留 BOM 和未触及正文。导出只包含当前文档托管词条。应用不维护账户、独立词条数据库、学习状态或复习计划；`dictionary.sqlite` 只是词典查询缓存，不是词条数据库。Linux x64 提供 AppImage 和 deb；窗口使用品牌图标，启动时在用户 XDG 数据目录写入不显示于启动菜单的桌面条目，使任务栏按 app_id 匹配图标；本地图片限文档目录及子目录，远程图片由用户主动加载。
+源码使用 CodeMirror，保存前比较文件 revision，原子写入保留 BOM 和未触及正文。导出只包含当前文档托管词条。应用不维护账户、独立词条数据库、学习状态或复习计划；`dictionary.sqlite` 只是词典查询缓存与发音音频存储，不是词条数据库。Linux x64 提供 AppImage 和 deb；窗口使用品牌图标，启动时在用户 XDG 数据目录写入不显示于启动菜单的桌面条目，使任务栏按 app_id 匹配图标；本地图片限文档目录及子目录，远程图片由用户主动加载。

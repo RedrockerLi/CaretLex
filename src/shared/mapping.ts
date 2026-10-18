@@ -35,14 +35,20 @@ function pathOf(ref: Reference, count = ref.tokens.length): string {
 function literal(value: JsonValue): value is { $literal: JsonValue } {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && Object.hasOwn(value, '$literal')
 }
+/** 可选文本字段：来源没有该字段或值不是非空字符串时写空串，不产生诊断。 */
+function optional(value: JsonValue): value is { $optional: JsonValue } {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && Object.hasOwn(value, '$optional')
+}
 function ownReferences(value: JsonValue): Reference[] {
   if (literal(value) || Array.isArray(value)) return []
   if (typeof value === 'string') { const ref = reference(value); return ref ? [ref] : [] }
+  if (optional(value)) { const ref = typeof value.$optional === 'string' ? reference(value.$optional) : undefined; return ref ? [ref] : [] }
   if (value && typeof value === 'object') return Object.values(value).flatMap(ownReferences)
   return []
 }
 function templateWalk(value: JsonValue, bound: Set<string>): string | undefined {
   if (literal(value)) return undefined
+  if (optional(value)) return typeof value.$optional === 'string' && reference(value.$optional) ? undefined : '$optional 的值必须是来源引用。'
   if (typeof value === 'string') {
     const ref = reference(value)
     if (!ref && /^[A-Za-z_][A-Za-z0-9_-]*\.[^\s]*$/.test(value)) return `来源引用 ${value} 的路径格式无效。`
@@ -103,6 +109,12 @@ export function instantiateMapping(template: JsonValue, sources: MappingSources)
   }
   const walk = (value: JsonValue, indices: Map<string, number>): JsonValue => {
     if (literal(value)) return cloneJson(value.$literal)
+    if (optional(value)) {
+      const ref = typeof value.$optional === 'string' ? reference(value.$optional) : undefined
+      if (!ref) return ''
+      const actual = get(ref, sources.values, indices)
+      return typeof actual === 'string' && actual.trim() ? cloneJson(actual) : ''
+    }
     if (typeof value === 'string') { const ref = reference(value); return ref ? resolve(ref, indices) : value }
     if (Array.isArray(value)) {
       const refs = value.flatMap(ownReferences)
@@ -129,6 +141,7 @@ export function instantiateMapping(template: JsonValue, sources: MappingSources)
 }
 export function renameSource(value: JsonValue, oldName: string, newName: string): JsonValue {
   if (literal(value)) return cloneJson(value)
+  if (optional(value)) return { $optional: typeof value.$optional === 'string' ? renameSource(value.$optional, oldName, newName) : value.$optional }
   if (typeof value === 'string') { const ref = reference(value); return ref?.source === oldName ? newName + value.slice(oldName.length) : value }
   if (Array.isArray(value)) return value.map(item => renameSource(item, oldName, newName))
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameSource(item, oldName, newName)]))
@@ -136,6 +149,7 @@ export function renameSource(value: JsonValue, oldName: string, newName: string)
 }
 export function referencesSource(value: JsonValue, name: string): boolean {
   if (literal(value)) return false
+  if (optional(value)) return typeof value.$optional === 'string' && reference(value.$optional)?.source === name
   if (typeof value === 'string') return reference(value)?.source === name
   if (Array.isArray(value)) return value.some(item => referencesSource(item, name))
   return !!value && typeof value === 'object' && Object.values(value).some(item => referencesSource(item, name))

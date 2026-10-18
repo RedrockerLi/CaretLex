@@ -52,13 +52,13 @@ CaretLex 只修改目标词形后的引用和文末托管区块。支持 GFM 脚
 
 - 跟随系统、亮色和暗色主题；
 - 多个 provider 实例、唯一启用实例、LLM 配置表单与 API 类型选择；
-- 全局词典增强：启用 Merriam-Webster Learner's Dictionary 后，词典提供 lemma 和英文释义，LLM 从候选义项中选择并填写中文释义与例句；词典结果缓存在本机 SQLite，词典失败时回退纯 LLM；
+- 全局词典增强：启用 Merriam-Webster Learner's Dictionary 后，词典提供 lemma 和英文释义，LLM 从候选义项中选择并填写中文释义与例句；词典结果缓存在本机 SQLite，词典失败时回退纯 LLM；词条同时写入词典音标与发音地址，音频字节缓存在本机，悬停词条卡可离线播放，查询缓存与发音音频可分别清空；
 - 来源侧响应 JSON 示例，Prompt 支持 `{{article.original_word}}`、`{{article.original_sentence}}` 和 `{{JSON}}` 变量；词典增强启用时还支持 `{{dictionary}}`；发送内容就是设置页里的 Prompt 替换变量后的结果，应用不追加隐藏指令；
 - 设置 JSON 文件的位置选择，可放入用户自己的同步目录；
 - 可折叠的 provider 实例、分栏连接表单、大尺寸 Prompt 与响应编辑框；
 - 恢复默认设置按钮，可修复非法 JSON、无法解码的配置及损坏的路径指针。
 
-默认词条包含 `lemma`、成对的 `contexts` 和 `other_meanings`。表单启用实例时生成实际 name 的完整预设，自定义结构不自动覆盖。保存映射通过设置文件中的 `saveTemplate` 配置，直接修改设置文件不自动套预设。
+默认词条包含 `lemma`、成对的 `contexts` 和 `other_meanings`，可选 `ipa` 与 `audio` 两个发音字段。表单启用实例时生成实际 name 的完整预设，自定义结构不自动覆盖。保存映射通过设置文件中的 `saveTemplate` 配置，直接修改设置文件不自动套预设；预设用 `{"$optional": "..."}` 引用发音字段，来源没有该字段时写空串且不产生诊断。
 
 Key 保存在本机独立明文文件，权限 `0600`；同步设置只保存凭据引用，表单显示掩码形式（前 5 位与后 4 位）并可删除本机 Key。LLM 使用真实非流式 HTTP，严格接受纯 JSON。获取失败仍可手填，晚到结果和重试不覆盖手改稿。保存成功以主进程写入回执为准。
 

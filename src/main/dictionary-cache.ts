@@ -3,7 +3,8 @@ import type { DictionaryCacheStats } from '../shared/bridge'
 import type { DictionaryLookup } from '../shared/dictionary'
 
 const PRODUCT = 'learners'
-const SCHEMA_VERSION = 1
+// 2：候选新增 audio 字段；旧行缺少发音信息，打开时清理后按需重抓。
+const SCHEMA_VERSION = 2
 
 function isLookup(value: unknown): value is DictionaryLookup {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false

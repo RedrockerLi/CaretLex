@@ -294,7 +294,7 @@ describe('dictionary-enriched adapter flow', () => {
       query: 'went',
       fetchedAt: 1,
       candidates: [{
-        entryId: 'go:1', lemma: 'go', partOfSpeech: 'verb',
+        entryId: 'go:1', lemma: 'go', partOfSpeech: 'verb', ipa: 'ˈgoʊ', audio: 'go0001',
         senses: [
           { id: 'go:1#0', definition: 'to move or travel', examples: [] },
           { id: 'go:1#1', definition: 'to leave', examples: [] }
@@ -322,12 +322,17 @@ describe('dictionary-enriched adapter flow', () => {
     if (!result.ok) return
     expect(result.value).toEqual({
       lemma: 'go',
+      ipa: 'ˈgoʊ',
+      audio: 'https://media.merriam-webster.com/audio/prons/en/us/mp3/g/go0001.mp3',
       meaning_in_context: '（动词）去',
       english_definition: 'to move or travel',
       other_meanings: [{ meaning: '（动词）离开', english_definition: 'to leave', example_sentence: 'She went home.' }]
     })
     expect(prompt).toContain('"available": true')
     expect(prompt).toContain('"id": "go:1#0"')
+    // 音标与音频地址只进词条，不发给 LLM。
+    expect(prompt).not.toContain('go0001')
+    expect(prompt).not.toContain('ˈgoʊ')
     expect(prompt).toContain(JSON.stringify(defaultDictionaryResponse, null, 2))
     expect(prompt).not.toContain('{{dictionary}}')
     expect(prompt).not.toContain('{{JSON}}')

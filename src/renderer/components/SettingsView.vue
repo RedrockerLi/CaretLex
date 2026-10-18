@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
-import type { SettingsSnapshot, ProviderDescription, DictionaryCacheStats } from '../../shared/bridge'
+import type { SettingsSnapshot, ProviderDescription, DictionaryCacheStats, AudioStats } from '../../shared/bridge'
 import { defaultSettings, parseSettings, renameProfile, type AppSettings } from '../../shared/settings'
 import { defaultDictionaryPrompt, defaultDictionaryResponse, defaultPrompt, isDefaultSaveStructure, legacyDefaultPrompt, llmApiTypes } from '../../shared/providers'
 import type { JsonValue } from '../../shared/types'
@@ -29,6 +29,8 @@ const dictionaryCredentialState = ref('正在检查本机凭据…')
 const dictionaryCredentialMask = ref('')
 const cacheStats = ref<DictionaryCacheStats | null>(null)
 const cacheError = ref('')
+const audioStats = ref<AudioStats | null>(null)
+const audioError = ref('')
 const hasKeys = computed(() => Object.values(keys.value).some(Boolean) || !!dictionaryKey.value)
 const hasLocalEdits = computed(() => hasKeys.value || !!Object.keys(bufferErrors.value).length)
 const validation = computed(() => parseSettings(source.value))
@@ -164,6 +166,17 @@ async function clearCache() {
   catch { cacheError.value = '词典缓存清空失败。' }
   finally { saving.value = false }
 }
+async function refreshAudioStats() {
+  audioError.value = ''
+  try { audioStats.value = await window.caretlex.audioStats() }
+  catch { audioStats.value = null; audioError.value = '无法读取发音音频状态。' }
+}
+async function clearAudio() {
+  saving.value = true; audioError.value = ''
+  try { audioStats.value = await window.caretlex.clearAudio(); notice.value = '发音音频已清空；播放时会重新下载。' }
+  catch { audioError.value = '发音音频清空失败。' }
+  finally { saving.value = false }
+}
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -174,6 +187,11 @@ const dictionaryLogo = computed(() => {
   const theme = form.value?.theme ?? 'system'
   const dark = theme === 'dark' || (theme === 'system' && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   return dark ? merriamWebsterDark : merriamWebsterLight
+})
+const pronunciationMapped = computed(() => {
+  const template = form.value?.saveTemplate
+  if (!template || typeof template !== 'object' || Array.isArray(template)) return false
+  return ['ipa', 'audio'].every(key => Object.hasOwn(template as Record<string, JsonValue>, key))
 })
 const promptVariablesHint = computed(() => form.value?.dictionary.enabled
   ? '可用变量：{{article.original_word}}、{{article.original_sentence}}、{{JSON}}、{{dictionary}}；应用不追加其他内容。'
@@ -259,6 +277,7 @@ watch(() => form.value?.dictionary.apiKeyRef, () => { void dictionaryCredential(
 onMounted(async () => {
   try { descriptions.value = await window.caretlex.providerTypes() } catch (error) { localError.value = String(error) }
   void refreshCacheStats()
+  void refreshAudioStats()
 })
 async function restoreDefaults() {
   saving.value = true; localError.value = ''; notice.value = ''
@@ -267,6 +286,7 @@ async function restoreDefaults() {
       keys.value = Object.create(null); credentialMasks.value = Object.create(null); buffers.value = {}; bufferErrors.value = {}
       dictionaryKey.value = ''; dictionaryCredentialMask.value = ''; dictionaryCredentialState.value = '正在检查本机凭据…'
       void refreshCacheStats()
+      void refreshAudioStats()
       notice.value = '已恢复并保存默认设置。'
     } else localError.value = props.error || '默认设置未恢复。'
   } catch (error) { localError.value = error instanceof Error ? error.message : String(error) }
@@ -371,6 +391,10 @@ async function save() {
               <div class="settings-row">
                 <div class="settings-row-copy"><span class="settings-row-label">本地缓存</span><p class="settings-row-hint">{{ cacheStats ? `${cacheStats.entries} 条 · ${formatBytes(cacheStats.bytes)}` : cacheError || '正在读取缓存状态…' }}</p></div>
                 <div class="settings-row-control"><button class="button button-secondary" data-field="dictionary-clear-cache" :disabled="saving || !cacheStats?.available" @click="clearCache">清空缓存</button></div>
+              </div>
+              <div class="settings-row">
+                <div class="settings-row-copy"><span class="settings-row-label">发音音频</span><p class="settings-row-hint">{{ audioStats ? `${audioStats.entries} 个 · ${formatBytes(audioStats.bytes)}` : audioError || '正在读取音频状态…' }}<template v-if="!pronunciationMapped"> · 当前保存映射不含 ipa/audio，重新启用实例会应用最新预设。</template></p></div>
+                <div class="settings-row-control"><button class="button button-secondary" data-field="audio-clear-cache" :disabled="saving || !audioStats?.available" @click="clearAudio">清空音频</button></div>
               </div>
             </div>
             <div class="settings-attribution">

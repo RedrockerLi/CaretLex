@@ -10,6 +10,9 @@ import { CredentialRepository } from './credentials'
 import { createLlmAdapter } from './llm'
 import { createDictionaryClient } from './dictionary'
 import { DictionaryCache } from './dictionary-cache'
+import { AudioStore } from './audio-store'
+import { createAudioFetcher, type AudioFetcher } from './audio'
+import { isPronunciationUrl } from '../shared/dictionary'
 import { documentToWire } from '../shared/document-wire'
 import { validateIdentity } from '../shared/entries'
 import { serializeJsonValue } from '../shared/json'
@@ -24,6 +27,8 @@ let settings: SettingsRepository
 let providers: ProviderService
 let credentials: CredentialRepository
 let dictionaryCache: DictionaryCache
+let audioStore: AudioStore
+let audio: AudioFetcher
 let mainWindow: BrowserWindow | undefined
 let closeAllowed = false
 let currentMenuState = initialMenuState
@@ -214,6 +219,7 @@ function registerHandlers(): void {
     if (!planned.value.changed) return resultWithChange(current, false)
     const saved = current.snapshot.path ? await documents.saveSource(id, planned.value.text, current.snapshot.revision) : await saveAsDialog(id, planned.value.text, baseRevision)
     if (!saved) throw new CaretLexError('SAVE_CANCELLED', '保存位置选择已取消，草稿保留。')
+    audio?.prefetch(input.value as never)
     return resultWithChange(saved, true)
   })
 
@@ -230,6 +236,7 @@ function registerHandlers(): void {
     if (!planned.ok) throw new CaretLexError(planned.error.code, planned.error.message)
     if (!planned.value.changed) return resultWithChange(current, false)
     const saved = await documents.saveSource(id, planned.value.text, current.snapshot.revision)
+    audio?.prefetch(input.value as never)
     return resultWithChange(saved, true)
   })
 
@@ -324,6 +331,16 @@ function registerHandlers(): void {
   ipcMain.handle('credential:remove', (event, ref: unknown) => { guard(event); return credentials.remove(requireString(ref, 'apiKeyRef', 128)) })
   ipcMain.handle('dictionary:stats', event => { guard(event); return dictionaryCache.stats() })
   ipcMain.handle('dictionary:clear', event => { guard(event); dictionaryCache.clear(); return dictionaryCache.stats() })
+
+  ipcMain.handle('audio:play', async (event, rawUrl: unknown) => {
+    guard(event)
+    const url = requireString(rawUrl, 'url', 8192)
+    if (!isPronunciationUrl(url)) throw new CaretLexError('INVALID_URL', '只允许播放 Merriam-Webster 的发音音频。')
+    const stored = await audio.load(url)
+    return stored ? `data:${stored.mime};base64,${Buffer.from(stored.bytes).toString('base64')}` : null
+  })
+  ipcMain.handle('audio:stats', event => { guard(event); return audioStore.stats() })
+  ipcMain.handle('audio:clear', event => { guard(event); audioStore.clear(); return audioStore.stats() })
 
   ipcMain.handle('system:open-external', async (event, rawUrl: unknown) => {
     guard(event)
@@ -474,6 +491,8 @@ app.whenReady().then(() => {
   settings = new SettingsRepository(app.getPath('userData'))
   credentials = new CredentialRepository(app.getPath('userData'))
   dictionaryCache = new DictionaryCache(resolve(app.getPath('userData'), 'dictionary.sqlite'))
+  audioStore = new AudioStore(resolve(app.getPath('userData'), 'dictionary.sqlite'))
+  audio = createAudioFetcher({ fetch: globalThis.fetch, store: audioStore })
   const dictionary = createDictionaryClient({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref), cache: dictionaryCache })
   const llm = createLlmAdapter({ fetch: globalThis.fetch, getKey: ref => credentials.get(ref), dictionary })
   providers = new ProviderService(documents, settings, new Map([['LLM', llm]]))
@@ -494,7 +513,7 @@ app.on('second-instance', async (_event, argv) => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => { dictionaryCache?.close() })
+app.on('before-quit', () => { dictionaryCache?.close(); audioStore?.close() })
 
 const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.quit()

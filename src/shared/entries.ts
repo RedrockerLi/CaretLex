@@ -44,6 +44,12 @@ export function mergeEntry(existing: JsonValue | undefined, candidate: JsonValue
     }
   }
   merged.contexts = rows
+  // 已有词条缺发音信息时补上；不覆盖已有值。
+  const fresh = objectValue(candidate)!
+  for (const key of ['ipa', 'audio'] as const) {
+    const current = merged[key]; const value = fresh[key]
+    if ((current === undefined || current === '') && typeof value === 'string' && value.trim()) merged[key] = value
+  }
   return { ok: true, value: merged }
 }
 export function locateContext(value: JsonValue, sentence?: string): { context?: Record<string, JsonValue>; message?: string } {

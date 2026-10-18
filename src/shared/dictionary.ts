@@ -2,8 +2,24 @@ import type { JsonValue } from './types'
 import type { ProviderIssue } from './providers'
 
 export interface DictionarySense { id: string; definition: string; examples: string[] }
-export interface DictionaryCandidate { entryId: string; lemma: string; partOfSpeech?: string; ipa?: string; senses: DictionarySense[] }
+export interface DictionaryCandidate { entryId: string; lemma: string; partOfSpeech?: string; ipa?: string; audio?: string; senses: DictionarySense[] }
 export interface DictionaryLookup { query: string; candidates: DictionaryCandidate[]; fetchedAt: number }
+
+const AUDIO_BASE = 'https://media.merriam-webster.com/audio/prons/en/us/mp3'
+const AUDIO_ID = /^[A-Za-z0-9_]+$/
+const AUDIO_URL = /^https:\/\/media\.merriam-webster\.com\/audio\/prons\/en\/us\/mp3\/(bix|gg|number|[a-z])\/[A-Za-z0-9_]+\.mp3$/
+
+/** Merriam-Webster 发音文件名到媒体地址；子目录规则见 API 文档。 */
+export function pronunciationUrl(id: string): string | undefined {
+  if (!AUDIO_ID.test(id)) return undefined
+  const subdirectory = id.startsWith('bix') ? 'bix' : id.startsWith('gg') ? 'gg' : /^[A-Za-z]/.test(id) ? id[0].toLowerCase() : 'number'
+  return `${AUDIO_BASE}/${subdirectory}/${id}.mp3`
+}
+
+/** 只放行 Merriam-Webster 发音媒体地址，避免词条里的任意地址被主进程请求。 */
+export function isPronunciationUrl(value: string): boolean {
+  return AUDIO_URL.test(value)
+}
 
 const MAX_CANDIDATES = 8
 const MAX_SENSES_PER_ENTRY = 6
@@ -46,6 +62,7 @@ interface ParsedEntry {
   headword: string
   partOfSpeech?: string
   ipa?: string
+  audio?: string
   stems: string[]
   senses: DictionarySense[]
 }
@@ -101,6 +118,9 @@ function parseEntry(value: unknown, index: number): ParsedEntry | undefined {
     .filter(Boolean)
   const prs = arrayValue(hwi.prs)
   const ipa = prs.map(item => isRecord(item) ? stringValue(item.ipa) : undefined).find((item): item is string => !!item)
+  const audio = prs
+    .map(item => isRecord(item) && isRecord(item.sound) ? stringValue(item.sound.audio) : undefined)
+    .find((item): item is string => !!item && AUDIO_ID.test(item))
   let senses = collectSenses(value.def, entryId)
   if (!senses.length) {
     senses = arrayValue(value.shortdef)
@@ -115,6 +135,7 @@ function parseEntry(value: unknown, index: number): ParsedEntry | undefined {
     headword,
     ...(typeof value.fl === 'string' && value.fl.trim() ? { partOfSpeech: value.fl.trim() } : {}),
     ...(ipa ? { ipa } : {}),
+    ...(audio ? { audio } : {}),
     stems,
     senses
   }
@@ -179,6 +200,7 @@ export function normalizeLearnersResponse(query: string, raw: unknown): Dictiona
     lemma: entry.headword,
     ...(entry.partOfSpeech ? { partOfSpeech: entry.partOfSpeech } : {}),
     ...(entry.ipa ? { ipa: entry.ipa } : {}),
+    ...(entry.audio ? { audio: entry.audio } : {}),
     senses: entry.senses
   }))
   return { query: normalizeHeadword(query), candidates, fetchedAt: Date.now() }
@@ -266,10 +288,13 @@ export function assembleEnrichedEntry(raw: JsonValue, lookup: DictionaryLookup |
     if (!meaning.trim() && !fallbackDefinition.trim() && !example.trim()) continue
     otherMeanings.push({ meaning, english_definition: fallbackDefinition, example_sentence: example })
   }
+  const matched = contextMatch?.candidate ?? candidatesByLemma.get(lemma)?.[0]
   return {
     ok: true,
     value: {
       lemma,
+      ipa: matched?.ipa ?? '',
+      audio: matched?.audio ? pronunciationUrl(matched.audio) ?? '' : '',
       meaning_in_context: truncate(text(raw, 'meaning_in_context'), MAX_ASSEMBLED_TEXT_CHARS),
       english_definition: englishDefinition,
       other_meanings: otherMeanings

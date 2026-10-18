@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, parseSettings, renameProfile } from '../../src/shared/settings'
 import { llmPreset, llmType, checkResponse, defaultDictionaryPrompt, defaultDictionaryResponse, defaultPrompt, defaultResponse, dictionaryPresetCompatibility, isDefaultSaveStructure, legacyDefaultPrompt, presetCompatibility, type ProviderType } from '../../src/shared/providers'
-import { instantiateMapping, referencesSource, validateMappingTemplate } from '../../src/shared/mapping'
+import { instantiateMapping, referencesSource, renameSource, validateMappingTemplate } from '../../src/shared/mapping'
 import { locateContext, mergeEntry } from '../../src/shared/entries'
 import { planAdd, planEdit } from '../../src/shared/patch'
 import { parseDocument, mapVisibleRange } from '../../src/shared/protocol'
@@ -53,7 +53,7 @@ describe('provider configuration and presets', () => {
     expect(llmType.validateConfig(edited, true)).toEqual({ ok: true, value: edited })
   })
   it('creates the complete preset from an arbitrary case-sensitive name', () => {
-    expect(llmPreset('Local_AI-2')).toEqual({ lemma: 'Local_AI-2.lemma', contexts: [{ original_sentence: 'article.original_sentence', meaning_in_context: 'Local_AI-2.meaning_in_context', english_definition: 'Local_AI-2.english_definition' }], other_meanings: [{ meaning: 'Local_AI-2.other_meanings[].meaning', english_definition: 'Local_AI-2.other_meanings[].english_definition', example_sentence: 'Local_AI-2.other_meanings[].example_sentence' }] })
+    expect(llmPreset('Local_AI-2')).toEqual({ lemma: 'Local_AI-2.lemma', ipa: { $optional: 'Local_AI-2.ipa' }, audio: { $optional: 'Local_AI-2.audio' }, contexts: [{ original_sentence: 'article.original_sentence', meaning_in_context: 'Local_AI-2.meaning_in_context', english_definition: 'Local_AI-2.english_definition' }], other_meanings: [{ meaning: 'Local_AI-2.other_meanings[].meaning', english_definition: 'Local_AI-2.other_meanings[].english_definition', example_sentence: 'Local_AI-2.other_meanings[].example_sentence' }] })
     expect(presetCompatibility(profile().config)).toBeUndefined()
     expect(presetCompatibility({ ...profile().config, responseTemplate: { lemma: '' } })).toBeDefined()
     expect(presetCompatibility({ ...profile().config, responseTemplate: { ...defaultResponse as object, other_meanings: [] } })).toBeDefined()
@@ -184,6 +184,22 @@ describe('source mappings and JSON values', () => {
     }, { p: { rows: [{ name: '', n: 0 }], obj: { text: '' }, nil: null, empty: [], absent: false } })
     expect(result.value).toEqual({ rows: [{ name: 'a', n: 1 }, { name: '', n: 2 }, { name: '', n: null }], obj: null, nil: null, empty: [], absent: null, unavailable: [] })
     expect(result.issues.length).toBe(6)
+  })
+  it('resolves $optional silently when the source field is missing, empty or unusable', () => {
+    const template = { ipa: { $optional: 'p.ipa' }, audio: { $optional: 'p.audio' }, empty: { $optional: 'p.empty' }, wrong: { $optional: 'p.wrong' }, absent: { $optional: 'p.absent' } }
+    const present = mapped(template, { p: { ipa: 'ˈgoʊ', audio: 'https://example.test/a.mp3', empty: '   ', wrong: 12 } })
+    expect(present.value).toEqual({ ipa: 'ˈgoʊ', audio: 'https://example.test/a.mp3', empty: '', wrong: '', absent: '' })
+    expect(present.issues).toEqual([])
+    expect(mapped({ x: { $optional: 'gone.field' } }, {}).issues).toEqual([])
+  })
+  it('validates and renames $optional references', () => {
+    expect(validateMappingTemplate({ x: { $optional: 'p.field' } }).ok).toBe(true)
+    expect(validateMappingTemplate({ x: { $optional: 'p.field' } }).ok && mapped({ x: { $optional: 'p.field' } }, { p: { field: 'v' } }).value).toEqual({ x: 'v' })
+    expect(validateMappingTemplate({ x: { $optional: 'nope' } }).ok).toBe(false)
+    expect(validateMappingTemplate({ x: { $optional: 12 } }).ok).toBe(false)
+    expect(referencesSource({ x: { $optional: 'p.field' } }, 'p')).toBe(true)
+    expect(referencesSource({ x: { $optional: 'p.field' } }, 'q')).toBe(false)
+    expect(renameSource({ x: { $optional: 'p.field' } }, 'p', 'q')).toEqual({ x: { $optional: 'q.field' } })
   })
   it('supports nested arrays at explicit layers and independent fixed arrays', () => {
     expect(mapped([{ name: 'p.rows[].name', children: [{ value: 'p.rows[].children[].value' }] }], { p: { rows: [{ name: 'one', children: [{ value: 1 }, { value: 2 }] }, { name: 'two', children: [] }] } }).value).toEqual([{ name: 'one', children: [{ value: 1 }, { value: 2 }] }, { name: 'two', children: [] }])
